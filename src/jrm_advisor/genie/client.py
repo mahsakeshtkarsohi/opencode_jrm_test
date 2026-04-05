@@ -13,7 +13,12 @@ Row parsing flow:
               └─► attachment.query  (GenieQueryAttachment)
                       └─► .statement_id
                               └─► get_message_query_result()
-                                      └─► StatementResponse.manifest + .result
+                                      └─► StatementResponse.manifest.schema
+                                              └─► column names only
+                                                  (data_array is None for EXTERNAL
+                                                   disposition results)
+                              └─► statement_execution.get_statement_result_chunk_n()
+                                      └─► ResultData.data_array  ← actual row data
                                               └─► rows as list[dict]
 """
 
