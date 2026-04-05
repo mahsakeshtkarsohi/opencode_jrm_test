@@ -1,0 +1,54 @@
+# Databricks Asset Bundle — JRM Media Advisor
+# See: https://docs.databricks.com/dev-tools/bundles/index.html
+
+bundle:
+  name: jrm-media-advisor
+
+workspace:
+  host: ${var.databricks_host}
+
+variables:
+  databricks_host:
+    description: Databricks workspace URL
+    default: ""
+
+targets:
+
+  dev:
+    mode: development
+    default: true
+    workspace:
+      host: ${var.databricks_host}
+    # Single-node cluster for interactive development
+    resources:
+      jobs:
+        jrm_advisor_job:
+          name: "[DEV] JRM Media Advisor"
+          tasks:
+            - task_key: run_advisor
+              new_cluster:
+                spark_version: 15.4.x-scala2.12
+                node_type_id: Standard_DS3_v2
+                num_workers: 0
+                spark_conf:
+                  spark.databricks.cluster.profile: singleNode
+                  master: local[*]
+              python_wheel_task:
+                package_name: jrm_advisor
+                entry_point: main
+
+  prod:
+    mode: production
+    workspace:
+      host: ${var.databricks_host}
+    # Serverless for production
+    resources:
+      jobs:
+        jrm_advisor_job:
+          name: "[PROD] JRM Media Advisor"
+          tasks:
+            - task_key: run_advisor
+              job_cluster_key: serverless
+              python_wheel_task:
+                package_name: jrm_advisor
+                entry_point: main
