@@ -90,20 +90,29 @@ def _make_query_result_response(
     columns: list[str],
     rows: list[list[str]],
 ):
-    """Build a mock GenieGetMessageQueryResultResponse with inline data."""
+    """Build a mock GenieGetMessageQueryResultResponse.
+
+    Returns schema/manifest only — row data is fetched via the chunk API
+    (statement_execution.get_statement_result_chunk_n), not from this response.
+    """
     from databricks.sdk.service import sql
     from databricks.sdk.service.dashboards import GenieGetMessageQueryResultResponse
 
     col_infos = [sql.ColumnInfo(name=c) for c in columns]
     schema = sql.ResultSchema(columns=col_infos)
-    manifest = sql.ResultManifest(schema=schema)
-    result_data = sql.ResultData(data_array=rows)
+    manifest = sql.ResultManifest(schema=schema, total_row_count=len(rows))
     statement_response = sql.StatementResponse(
         manifest=manifest,
-        result=result_data,
         statement_id="stmt-001",
     )
     return GenieGetMessageQueryResultResponse(statement_response=statement_response)
+
+
+def _make_chunk(rows: list[list[str]], next_chunk_index: int | None = None):
+    """Build a mock ResultData chunk returned by get_statement_result_chunk_n."""
+    from databricks.sdk.service import sql
+
+    return sql.ResultData(data_array=rows, next_chunk_index=next_chunk_index)
 
 
 @pytest.fixture()
@@ -163,32 +172,36 @@ class TestCredentials:
 
 
 class TestAskSuccess:
-    def test_returns_genie_result(self, mock_ws):
+    def _setup(self, mock_ws, columns, rows):
+        """Wire both the manifest response and the chunk data."""
         mock_ws.genie.start_conversation_and_wait.return_value = _make_genie_message()
         mock_ws.genie.get_message_query_result.return_value = (
-            _make_query_result_response(
-                columns=["year_week", "sales_uplift_percentage"],
-                rows=[["202501", "0.12"], ["202502", "0.18"]],
-            )
+            _make_query_result_response(columns=columns, rows=rows)
+        )
+        mock_ws.statement_execution.get_statement_result_chunk_n.return_value = (
+            _make_chunk(rows)
         )
 
-        client = GenieClient()
-        result = client.ask("Show weekly sales uplift for the Coca-Cola campaign")
-
+    def test_returns_genie_result(self, mock_ws):
+        self._setup(
+            mock_ws,
+            columns=["year_week", "sales_uplift_percentage"],
+            rows=[["202501", "0.12"], ["202502", "0.18"]],
+        )
+        result = GenieClient().ask(
+            "Show weekly sales uplift for the Coca-Cola campaign"
+        )
         assert isinstance(result, GenieResult)
 
     def test_result_contains_question(self, mock_ws):
-        mock_ws.genie.start_conversation_and_wait.return_value = _make_genie_message()
-        mock_ws.genie.get_message_query_result.return_value = (
-            _make_query_result_response(
-                columns=["year_week", "sales_uplift_percentage"],
-                rows=[["202501", "0.12"]],
-            )
+        self._setup(
+            mock_ws,
+            columns=["year_week", "sales_uplift_percentage"],
+            rows=[["202501", "0.12"]],
         )
-
-        client = GenieClient()
-        result = client.ask("Show weekly sales uplift for the Coca-Cola campaign")
-
+        result = GenieClient().ask(
+            "Show weekly sales uplift for the Coca-Cola campaign"
+        )
         assert result.question == "Show weekly sales uplift for the Coca-Cola campaign"
 
     def test_result_contains_sql(self, mock_ws):
@@ -202,24 +215,19 @@ class TestAskSuccess:
                 rows=[["202501", "0.12"]],
             )
         )
-
-        client = GenieClient()
-        result = client.ask("any question")
-
+        mock_ws.statement_execution.get_statement_result_chunk_n.return_value = (
+            _make_chunk([["202501", "0.12"]])
+        )
+        result = GenieClient().ask("any question")
         assert result.sql == expected_sql
 
     def test_result_rows_mapped_to_column_names(self, mock_ws):
-        mock_ws.genie.start_conversation_and_wait.return_value = _make_genie_message()
-        mock_ws.genie.get_message_query_result.return_value = (
-            _make_query_result_response(
-                columns=["year_week", "sales_uplift_percentage"],
-                rows=[["202501", "0.12"], ["202502", "0.18"]],
-            )
+        self._setup(
+            mock_ws,
+            columns=["year_week", "sales_uplift_percentage"],
+            rows=[["202501", "0.12"], ["202502", "0.18"]],
         )
-
-        client = GenieClient()
-        result = client.ask("any question")
-
+        result = GenieClient().ask("any question")
         assert len(result.rows) == 2
         assert result.rows[0] == {
             "year_week": "202501",
@@ -238,27 +246,32 @@ class TestAskSuccess:
                 rows=[],
             )
         )
-
-        client = GenieClient()
-        result = client.ask("any question")
-
+        # total_row_count=0 means _fetch_rows returns early without calling chunk API
+        result = GenieClient().ask("any question")
         assert result.rows == []
 
     def test_correct_space_id_passed_to_start_conversation(self, mock_ws):
-        mock_ws.genie.start_conversation_and_wait.return_value = _make_genie_message()
-        mock_ws.genie.get_message_query_result.return_value = (
-            _make_query_result_response(
-                columns=["year_week", "actual_sales"],
-                rows=[["202501", "5000.0"]],
-            )
+        self._setup(
+            mock_ws,
+            columns=["year_week", "actual_sales"],
+            rows=[["202501", "5000.0"]],
         )
-
-        client = GenieClient()
-        client.ask("any question")
-
+        GenieClient().ask("any question")
         mock_ws.genie.start_conversation_and_wait.assert_called_once_with(
             space_id="test-space-id",
             content="any question",
+        )
+
+    def test_chunk_api_called_with_statement_id(self, mock_ws):
+        self._setup(
+            mock_ws,
+            columns=["year_week", "sales_uplift_percentage"],
+            rows=[["202501", "0.12"]],
+        )
+        GenieClient().ask("any question")
+        mock_ws.statement_execution.get_statement_result_chunk_n.assert_called_once_with(
+            statement_id="stmt-001",
+            chunk_index=0,
         )
 
 
@@ -314,8 +327,16 @@ class TestApiError:
 
     def test_fetch_rows_exception_raises_genie_error(self, mock_ws):
         mock_ws.genie.start_conversation_and_wait.return_value = _make_genie_message()
-        mock_ws.genie.get_message_query_result.side_effect = RuntimeError(
-            "network error"
+        mock_ws.genie.get_message_query_result.return_value = (
+            _make_query_result_response(
+                columns=["year_week", "sales_uplift_percentage"],
+                rows=[
+                    ["202501", "0.12"]
+                ],  # total_row_count=1 so chunk fetch is attempted
+            )
+        )
+        mock_ws.statement_execution.get_statement_result_chunk_n.side_effect = (
+            RuntimeError("network error")
         )
 
         client = GenieClient()
@@ -373,6 +394,9 @@ class TestLogging:
                 rows=[["202501", "0.12"]],
             )
         )
+        mock_ws.statement_execution.get_statement_result_chunk_n.return_value = (
+            _make_chunk([["202501", "0.12"]])
+        )
 
         client = GenieClient()
         with caplog.at_level(logging.INFO, logger="jrm_advisor.genie.client"):
@@ -390,6 +414,9 @@ class TestLogging:
                 columns=["year_week", "sales_uplift_percentage"],
                 rows=[["202501", "0.99"]],
             )
+        )
+        mock_ws.statement_execution.get_statement_result_chunk_n.return_value = (
+            _make_chunk([["202501", "0.99"]])
         )
 
         client = GenieClient()

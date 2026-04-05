@@ -216,10 +216,15 @@ class GenieClient:
         statement_id: str,
         sql: str,
     ) -> list[dict[str, Any]]:
-        """Retrieve query result rows from the Genie statement result.
+        """Retrieve query result rows for the given statement.
+
+        The Genie message query result endpoint returns schema + metadata but
+        the actual row data is served via the Statement Execution chunk API.
+        We call get_statement_result_chunk_n for each chunk until exhausted.
 
         Never logs row content — rows may contain campaign / retailer PII.
         """
+        # Step 1: get schema (column names) from the Genie result endpoint
         try:
             result_response = self._ws.genie.get_message_query_result(
                 space_id=self._space_id,
@@ -232,25 +237,47 @@ class GenieClient:
             ) from exc
 
         statement = result_response.statement_response
-        if not statement or not statement.manifest or not statement.result:
+        if not statement or not statement.manifest:
             logger.debug(
-                "GenieClient._fetch_rows: empty result set for statement_id=%s",
+                "GenieClient._fetch_rows: no manifest for statement_id=%s",
                 statement_id,
             )
             return []
 
-        # Build column name list from manifest schema
         columns: list[str] = [
             col.name for col in (statement.manifest.schema.columns or []) if col.name
         ]
+        total_rows = statement.manifest.total_row_count or 0
 
-        data_array = statement.result.data_array or []
+        if total_rows == 0:
+            logger.debug(
+                "GenieClient._fetch_rows: manifest reports 0 rows for statement_id=%s",
+                statement_id,
+            )
+            return []
+
+        # Step 2: fetch row data chunk by chunk via Statement Execution API.
+        # The Genie result endpoint may return data_array=None when the result
+        # uses EXTERNAL disposition; the chunk API always returns inline data.
         rows: list[dict[str, Any]] = []
-        for raw_row in data_array:
-            if raw_row is None:
-                continue
-            row = {col: val for col, val in zip(columns, raw_row)}
-            rows.append(row)
+        chunk_index = 0
+        while chunk_index is not None:
+            try:
+                chunk = self._ws.statement_execution.get_statement_result_chunk_n(
+                    statement_id=statement_id,
+                    chunk_index=chunk_index,
+                )
+            except Exception as exc:
+                raise GenieError(
+                    f"Failed to fetch chunk {chunk_index} for statement_id={statement_id}: {exc}"
+                ) from exc
+
+            for raw_row in chunk.data_array or []:
+                if raw_row is None:
+                    continue
+                rows.append({col: val for col, val in zip(columns, raw_row)})
+
+            chunk_index = chunk.next_chunk_index  # None when last chunk
 
         logger.debug(
             "GenieClient._fetch_rows: parsed %d rows with columns=%s",
