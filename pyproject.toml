@@ -19,6 +19,16 @@ dev = [
     "pytest-cov",
     "ruff>=0.4",
 ]
+app = [
+    "streamlit>=1.38",
+    "plotly>=5.20",
+    "pandas>=2.0",
+]
+eval = [
+    # Required for MLflow GenAI LLM-scored dimensions (Correctness, Guidelines)
+    # when tracking URI is set to "databricks".
+    "databricks-agents>=0.6",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

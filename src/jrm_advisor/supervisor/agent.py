@@ -401,7 +401,12 @@ class SupervisorAgent:
 
     Args:
         kb_client:       Knowledge Base client. Defaults to ``KnowledgeBaseClient()``.
+                         When construction fails (e.g. missing ``KB_ENDPOINT_URL``),
+                         KB calls degrade gracefully and return ``ANSWER_UNAVAILABLE``.
         genie_client:    Genie client. Defaults to ``GenieClient()``.
+                         When construction fails (e.g. missing ``GENIE_SPACE_ID``),
+                         Genie calls degrade gracefully and return a data-unavailable
+                         message.
         resolver_client: Campaign name resolver. Defaults to
                          ``CampaignResolverClient()``.  Pass ``None`` to
                          disable campaign resolution entirely (graceful
@@ -422,8 +427,31 @@ class SupervisorAgent:
         resolver_client: CampaignResolverClient | None = _SENTINEL,  # type: ignore[assignment]
         composer: AnswerComposer | None = None,
     ) -> None:
-        self._kb = kb_client if kb_client is not None else KnowledgeBaseClient()
-        self._genie = genie_client if genie_client is not None else GenieClient()
+        if kb_client is not None:
+            self._kb: KnowledgeBaseClient | None = kb_client
+        else:
+            try:
+                self._kb = KnowledgeBaseClient()
+            except Exception as exc:
+                logger.warning(
+                    "SupervisorAgent: could not initialise KnowledgeBaseClient "
+                    "(%s) — KB calls will return ANSWER_UNAVAILABLE",
+                    exc,
+                )
+                self._kb = None
+
+        if genie_client is not None:
+            self._genie: GenieClient | None = genie_client
+        else:
+            try:
+                self._genie = GenieClient()
+            except Exception as exc:
+                logger.warning(
+                    "SupervisorAgent: could not initialise GenieClient "
+                    "(%s) — Genie calls will return data-unavailable message",
+                    exc,
+                )
+                self._genie = None
         # resolver_client=None means "disabled"; sentinel means "use default"
         if resolver_client is _SENTINEL:
             try:
@@ -608,6 +636,9 @@ class SupervisorAgent:
     @mlflow.trace(name="kb_call", span_type="RETRIEVER")
     def _call_kb(self, question: str) -> str:
         """Call the Knowledge Base and return clean prose or ANSWER_UNAVAILABLE."""
+        if self._kb is None:
+            logger.warning("SupervisorAgent._call_kb: KB client unavailable")
+            return ANSWER_UNAVAILABLE
         try:
             answer = self._kb.ask(question)
             logger.debug("SupervisorAgent._call_kb: received answer")
@@ -628,6 +659,9 @@ class SupervisorAgent:
         Always returns a tuple — never raises. The caller decides how to
         incorporate an error into the final answer.
         """
+        if self._genie is None:
+            logger.warning("SupervisorAgent._call_genie: Genie client unavailable")
+            return None, _DATA_UNAVAILABLE
         try:
             result = self._genie.ask(question)
             logger.debug(

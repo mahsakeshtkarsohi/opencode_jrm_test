@@ -1,0 +1,91 @@
+# Databricks App manifest — JRM Media Advisor
+# Deploy with: databricks apps deploy jrm-media-advisor --source-code-path .
+# Or via DABs: databricks bundle deploy --target dev
+#
+# Auth model: user PAT stored in the jrm-advisor secret scope.
+# The app runs as the token owner — no service principal required.
+# To set your token:
+#   databricks secrets put-secret jrm-advisor databricks_token --string-value <your-PAT>
+
+command:
+  - streamlit
+  - run
+  - src/jrm_advisor/app/app.py
+  - --server.port
+  - "8000"
+  - --server.address
+  - "0.0.0.0"
+  - --server.headless
+  - "true"
+
+env:
+  # ── Auth — PAT stored in secret scope, no service principal needed ─────────
+  - name: DATABRICKS_TOKEN
+    valueFrom: databricks_token
+
+  # ── Backend toggle ─────────────────────────────────────────────────────────
+  # Set to "true" during local development to use the deterministic mock.
+  # Must be "false" (or unset) in the deployed Databricks App.
+  - name: USE_MOCK_BACKEND
+    value: "false"
+
+  # ── Feedback table location ────────────────────────────────────────────────
+  - name: FEEDBACK_CATALOG
+    value: "dsa_development"
+  - name: FEEDBACK_SCHEMA
+    value: "retail_media"
+  - name: FEEDBACK_TABLE
+    value: "jrm_advisor_feedback"
+
+  # ── Genie Space ────────────────────────────────────────────────────────────
+  - name: GENIE_SPACE_ID
+    valueFrom: genie_space_id
+
+  # ── Knowledge Base endpoint ────────────────────────────────────────────────
+  - name: KB_ENDPOINT_URL
+    valueFrom: kb_endpoint_url
+
+  # ── LLM composer endpoint ──────────────────────────────────────────────────
+  - name: COMPOSER_ENDPOINT
+    valueFrom: composer_endpoint
+
+  # ── SQL Warehouse for campaign resolver + feedback writer ──────────────────
+  - name: DATABRICKS_SQL_WAREHOUSE_ID
+    valueFrom: sql_warehouse_id
+
+  # ── Campaign resolver thresholds (optional — defaults apply if unset) ──────
+  - name: CAMPAIGN_RESOLVER_THRESHOLD
+    value: "0.7"
+  - name: CAMPAIGN_RESOLVER_AMBIGUITY_GAP
+    value: "0.05"
+
+  # ── MLflow experiment ──────────────────────────────────────────────────────
+  - name: MLFLOW_EXPERIMENT_NAME
+    value: "/Shared/jrm-advisor-eval"
+
+resources:
+  - name: databricks_token
+    description: "Personal Access Token of the user running the app (no SP needed)"
+    secret:
+      scope: jrm-advisor
+      key: databricks_token
+  - name: genie_space_id
+    description: "Genie Space ID for in-store campaign data"
+    secret:
+      scope: jrm-advisor
+      key: genie_space_id
+  - name: kb_endpoint_url
+    description: "Knowledge Base KA Model Serving endpoint URL"
+    secret:
+      scope: jrm-advisor
+      key: kb_endpoint_url
+  - name: composer_endpoint
+    description: "Foundation model endpoint URL for answer composition"
+    secret:
+      scope: jrm-advisor
+      key: composer_endpoint
+  - name: sql_warehouse_id
+    description: "SQL Warehouse ID for campaign resolution and feedback"
+    secret:
+      scope: jrm-advisor
+      key: sql_warehouse_id
