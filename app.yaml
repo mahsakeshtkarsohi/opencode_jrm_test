@@ -2,10 +2,11 @@
 # Deploy with: databricks apps deploy jrm-media-advisor --source-code-path .
 # Or via DABs: databricks bundle deploy --target dev
 #
-# Auth model: user PAT stored in the jrm-advisor secret scope.
-# The app runs as the token owner — no service principal required.
-# To set your token:
-#   databricks secrets put-secret jrm-advisor databricks_token --string-value <your-PAT>
+# Auth model: on-behalf-of (OBO) user auth.
+# The Databricks App runtime injects the logged-in user's access token in the
+# x-forwarded-access-token HTTP header. The app reads this header on every
+# request — no service principal or PAT secret is needed.
+# OBO scopes (sql, dashboards.genie) are configured in the Databricks App UI.
 
 command:
   - streamlit
@@ -19,10 +20,6 @@ command:
   - "true"
 
 env:
-  # ── Auth — PAT stored in secret scope, no service principal needed ─────────
-  - name: DATABRICKS_TOKEN
-    valueFrom: databricks_token
-
   # ── Backend toggle ─────────────────────────────────────────────────────────
   # Set to "true" during local development to use the deterministic mock.
   # Must be "false" (or unset) in the deployed Databricks App.
@@ -64,11 +61,6 @@ env:
     value: "/Shared/jrm-advisor-eval"
 
 resources:
-  - name: databricks_token
-    description: "Personal Access Token of the user running the app (no SP needed)"
-    secret:
-      scope: jrm-advisor
-      key: databricks_token
   - name: genie_space_id
     description: "Genie Space ID for in-store campaign data"
     secret:

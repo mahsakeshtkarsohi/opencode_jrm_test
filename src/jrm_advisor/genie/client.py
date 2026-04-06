@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from typing import Any
 
 from databricks.sdk import WorkspaceClient
@@ -33,6 +34,15 @@ from databricks.sdk.service.dashboards import GenieAttachment, GenieMessage
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
+
+# SEC-4: only allow well-formed Databricks workspace URLs so a misconfigured
+# host cannot redirect the OBO token to an attacker-controlled endpoint.
+_DATABRICKS_HOST_RE = re.compile(
+    r"^https://[a-zA-Z0-9\-]+\.[0-9]+\.azuredatabricks\.net$"
+    r"|^https://[a-zA-Z0-9\-\.]+\.azuredatabricks\.net$"
+    r"|^https://[a-zA-Z0-9\-\.]+\.gcp\.databricks\.com$"
+    r"|^https://[a-zA-Z0-9\-\.]+\.cloud\.databricks\.com$"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -85,16 +95,17 @@ class GenieClient:
     All three are required. Missing variables raise ``ValueError`` at construction time.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, token: str | None = None) -> None:
         host = os.environ.get("DATABRICKS_HOST")
-        token = os.environ.get("DATABRICKS_TOKEN")
+        env_token = os.environ.get("DATABRICKS_TOKEN")
+        effective_token = token or env_token
         space_id = os.environ.get("GENIE_SPACE_ID")
 
         missing = [
             k
             for k, v in [
                 ("DATABRICKS_HOST", host),
-                ("DATABRICKS_TOKEN", token),
+                ("authentication token", effective_token),
                 ("GENIE_SPACE_ID", space_id),
             ]
             if not v
@@ -105,8 +116,15 @@ class GenieClient:
                 "Copy .env.example to .env and fill in the values."
             )
 
+        # SEC-4: validate host URL to prevent token leakage to wrong endpoint.
+        if not _DATABRICKS_HOST_RE.match(host):  # type: ignore[arg-type]
+            raise ValueError(
+                f"DATABRICKS_HOST={host!r} is not a recognised Databricks workspace URL. "
+                "Expected format: https://<workspace>.azuredatabricks.net"
+            )
+
         self._space_id: str = space_id  # type: ignore[assignment]
-        self._ws = WorkspaceClient(host=host, token=token)
+        self._ws = WorkspaceClient(host=host, token=effective_token)
 
     # ------------------------------------------------------------------
     # Public API

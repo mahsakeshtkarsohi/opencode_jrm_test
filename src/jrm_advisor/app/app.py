@@ -12,8 +12,13 @@ Features:
   - Mock backend toggle via USE_MOCK_BACKEND=true
 
 Authentication:
-  On Databricks the app runs as a service principal (app auth). Credentials
-  are auto-injected by the platform — no token handling in this file.
+  On Databricks Apps the logged-in user's access token is forwarded in the
+  ``x-forwarded-access-token`` HTTP header. This file extracts it on every
+  request via ``st.context.headers`` and passes it to the backend so all
+  Databricks API calls run under the user's own identity (OBO auth).
+  No service principal or PAT is required.
+
+  Locally: set DATABRICKS_TOKEN in your .env file as the fallback.
 
 Layout:
   ┌───────────────────────────────────────────┐
@@ -57,6 +62,29 @@ _PLACEHOLDER = (
 )
 _USE_MOCK = os.getenv("USE_MOCK_BACKEND", "false").lower() == "true"
 
+
+# ── OBO token extraction ──────────────────────────────────────────────────────
+
+
+def _get_user_token() -> str | None:
+    """Extract the on-behalf-of user access token from the Databricks App runtime.
+
+    Databricks Apps inject the logged-in user's access token in the
+    ``x-forwarded-access-token`` HTTP header.  ``st.context.headers`` exposes
+    this when running inside a Databricks App.  Streamlit normalises all header
+    names to lowercase, so only the lowercase key is checked.
+
+    Returns ``None`` when the header is absent (local development) — callers
+    fall back to the ``DATABRICKS_TOKEN`` env var automatically.
+    """
+    try:
+        token = st.context.headers.get("x-forwarded-access-token")
+        return token or None
+    except AttributeError:
+        # st.context.headers not available in older Streamlit versions
+        return None
+
+
 # ── Session state initialisation ──────────────────────────────────────────────
 
 
@@ -71,14 +99,6 @@ def _init_session() -> None:
     for key, val in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = val
-
-
-# ── Backend (cached for the session) ─────────────────────────────────────────
-
-
-@st.cache_resource(show_spinner=False)
-def _load_backend():
-    return get_backend()
 
 
 # ── Rendering helpers ─────────────────────────────────────────────────────────
@@ -121,7 +141,9 @@ def _render_data_table(response: AppResponse) -> None:
         st.dataframe(pd.DataFrame(response.genie_rows), use_container_width=True)
 
 
-def _render_feedback_bar(turn_idx: int, response: AppResponse) -> None:
+def _render_feedback_bar(
+    turn_idx: int, response: AppResponse, user_token: str | None
+) -> None:
     """Render the thumbs-up / thumbs-down widget for a given turn."""
     if turn_idx in st.session_state["feedback_submitted"]:
         st.caption("Thank you for your feedback.")
@@ -130,7 +152,7 @@ def _render_feedback_bar(turn_idx: int, response: AppResponse) -> None:
     col_up, col_down, col_spacer = st.columns([1, 1, 8])
     with col_up:
         if st.button("👍", key=f"thumbs_up_{turn_idx}", help="This answer was helpful"):
-            _do_feedback(turn_idx, response, "thumbs_up")
+            _do_feedback(turn_idx, response, "thumbs_up", user_token=user_token)
             st.rerun()
     with col_down:
         if st.button(
@@ -147,7 +169,13 @@ def _render_feedback_bar(turn_idx: int, response: AppResponse) -> None:
             placeholder="e.g. The answer was missing the uplift percentage breakdown.",
         )
         if st.button("Submit feedback", key=f"submit_comment_{turn_idx}"):
-            _do_feedback(turn_idx, response, "thumbs_down", comment=comment)
+            _do_feedback(
+                turn_idx,
+                response,
+                "thumbs_down",
+                comment=comment,
+                user_token=user_token,
+            )
             st.rerun()
 
 
@@ -156,6 +184,7 @@ def _do_feedback(
     response: AppResponse,
     rating: str,
     comment: str = "",
+    user_token: str | None = None,
 ) -> None:
     """Write feedback and mark the turn as done."""
     # Look up the question from the message history (assistant turn idx → user turn idx - 1)
@@ -173,6 +202,7 @@ def _do_feedback(
         comment=comment,
         session_id=st.session_state["session_id"],
         resolved_campaign=response.resolved_campaign_name,
+        user_token=user_token,
     )
     st.session_state["feedback_submitted"].add(turn_idx)
     # Clean up comment box state
@@ -184,7 +214,10 @@ def _do_feedback(
 
 def main() -> None:
     _init_session()
-    backend = _load_backend()
+
+    # Extract OBO user token on every request (header is per-request)
+    user_token = _get_user_token()
+    backend = get_backend(user_token=user_token)
 
     # Header
     col_title, col_clear = st.columns([6, 1])
@@ -213,7 +246,7 @@ def main() -> None:
             _render_data_table(resp)
             # Only show feedback widget on the last assistant turn
             if i == len(messages) - 1:
-                _render_feedback_bar(i, resp)
+                _render_feedback_bar(i, resp, user_token=user_token)
 
     # ── Chat input ────────────────────────────────────────────────────────────
     if question := st.chat_input(_PLACEHOLDER):
@@ -248,7 +281,7 @@ def main() -> None:
 
         # Feedback widget for this new turn
         turn_idx = len(st.session_state["messages"]) - 1
-        _render_feedback_bar(turn_idx, response)
+        _render_feedback_bar(turn_idx, response, user_token=user_token)
 
 
 if __name__ == "__main__":

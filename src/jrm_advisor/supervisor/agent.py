@@ -426,12 +426,13 @@ class SupervisorAgent:
         genie_client: GenieClient | None = None,
         resolver_client: CampaignResolverClient | None = _SENTINEL,  # type: ignore[assignment]
         composer: AnswerComposer | None = None,
+        user_token: str | None = None,
     ) -> None:
         if kb_client is not None:
             self._kb: KnowledgeBaseClient | None = kb_client
         else:
             try:
-                self._kb = KnowledgeBaseClient()
+                self._kb = KnowledgeBaseClient(token=user_token)
             except Exception as exc:
                 logger.warning(
                     "SupervisorAgent: could not initialise KnowledgeBaseClient "
@@ -444,7 +445,7 @@ class SupervisorAgent:
             self._genie: GenieClient | None = genie_client
         else:
             try:
-                self._genie = GenieClient()
+                self._genie = GenieClient(token=user_token)
             except Exception as exc:
                 logger.warning(
                     "SupervisorAgent: could not initialise GenieClient "
@@ -455,7 +456,9 @@ class SupervisorAgent:
         # resolver_client=None means "disabled"; sentinel means "use default"
         if resolver_client is _SENTINEL:
             try:
-                self._resolver: CampaignResolverClient | None = CampaignResolverClient()
+                self._resolver: CampaignResolverClient | None = CampaignResolverClient(
+                    token=user_token
+                )
             except Exception as exc:
                 logger.warning(
                     "SupervisorAgent: could not initialise CampaignResolverClient "
@@ -465,7 +468,9 @@ class SupervisorAgent:
                 self._resolver = None
         else:
             self._resolver = resolver_client
-        self._composer = composer if composer is not None else AnswerComposer()
+        self._composer = (
+            composer if composer is not None else AnswerComposer(token=user_token)
+        )
 
     # ------------------------------------------------------------------
     # Public API

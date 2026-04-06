@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 
 from databricks.sdk import WorkspaceClient
@@ -55,6 +56,14 @@ _DEFAULT_THRESHOLD = 0.7
 _DEFAULT_AMBIGUITY_GAP = 0.05
 _UC_FUNCTION = "dsa_development.retail_media.search_campaigns"
 _STATEMENT_TIMEOUT_SECONDS = 30
+
+# SEC-4: valid Databricks workspace URL pattern (shared with genie/client.py).
+_DATABRICKS_HOST_RE = re.compile(
+    r"^https://[a-zA-Z0-9\-]+\.[0-9]+\.azuredatabricks\.net$"
+    r"|^https://[a-zA-Z0-9\-\.]+\.azuredatabricks\.net$"
+    r"|^https://[a-zA-Z0-9\-\.]+\.gcp\.databricks\.com$"
+    r"|^https://[a-zA-Z0-9\-\.]+\.cloud\.databricks\.com$"
+)
 # Non-terminal states indicate the statement did not complete within wait_timeout.
 # The installed SDK has no TIMEDOUT member; PENDING or RUNNING signal a timeout.
 # CANCELED and CLOSED are also terminal — treat them as errors, not timeouts.
@@ -152,16 +161,17 @@ class CampaignResolverClient:
             ...
     """
 
-    def __init__(self) -> None:
+    def __init__(self, token: str | None = None) -> None:
         host = os.environ.get("DATABRICKS_HOST")
-        token = os.environ.get("DATABRICKS_TOKEN")
+        env_token = os.environ.get("DATABRICKS_TOKEN")
+        effective_token = token or env_token
         warehouse_id = os.environ.get("DATABRICKS_SQL_WAREHOUSE_ID")
 
         missing = [
             k
             for k, v in [
                 ("DATABRICKS_HOST", host),
-                ("DATABRICKS_TOKEN", token),
+                ("authentication token", effective_token),
                 ("DATABRICKS_SQL_WAREHOUSE_ID", warehouse_id),
             ]
             if not v
@@ -172,8 +182,15 @@ class CampaignResolverClient:
                 "Copy .env.example to .env and fill in the values."
             )
 
+        # SEC-4: validate host URL to prevent token leakage to wrong endpoint.
+        if not _DATABRICKS_HOST_RE.match(host):  # type: ignore[arg-type]
+            raise ValueError(
+                f"DATABRICKS_HOST={host!r} is not a recognised Databricks workspace URL. "
+                "Expected format: https://<workspace>.azuredatabricks.net"
+            )
+
         self._warehouse_id: str = warehouse_id  # type: ignore[assignment]
-        self._ws = WorkspaceClient(host=host, token=token)
+        self._ws = WorkspaceClient(host=host, token=effective_token)
 
         self._threshold: float = float(
             os.environ.get("CAMPAIGN_RESOLVER_THRESHOLD", str(_DEFAULT_THRESHOLD))

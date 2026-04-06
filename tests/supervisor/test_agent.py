@@ -899,3 +899,185 @@ class TestGracefulDegradation:
         response = agent.answer("What is uplift and how did my campaign perform?")
         assert isinstance(response, SupervisorResponse)
         assert response.text
+
+
+# ---------------------------------------------------------------------------
+# SupervisorAgent — OBO user_token passthrough
+# ---------------------------------------------------------------------------
+
+
+class TestUserTokenPassthrough:
+    """user_token is forwarded to all injected sub-clients via __init__."""
+
+    def test_user_token_passed_to_kb_client(self):
+        """When user_token is provided and KnowledgeBaseClient is constructed,
+        the token is passed as the ``token`` kwarg."""
+        from unittest.mock import patch
+
+        with (
+            patch("jrm_advisor.supervisor.agent.KnowledgeBaseClient") as mock_kb_cls,
+            patch("jrm_advisor.supervisor.agent.GenieClient") as mock_genie_cls,
+            patch(
+                "jrm_advisor.supervisor.agent.CampaignResolverClient"
+            ) as mock_resolver_cls,
+            patch("jrm_advisor.supervisor.agent.AnswerComposer") as mock_composer_cls,
+        ):
+            mock_kb_cls.return_value = MagicMock()
+            mock_genie_cls.return_value = MagicMock()
+            mock_resolver_cls.return_value = MagicMock()
+            mock_composer_cls.return_value = MagicMock()
+
+            SupervisorAgent(user_token="dapi_test_token")
+
+            mock_kb_cls.assert_called_once_with(token="dapi_test_token")
+
+    def test_user_token_passed_to_genie_client(self):
+        from unittest.mock import patch
+
+        with (
+            patch("jrm_advisor.supervisor.agent.KnowledgeBaseClient") as mock_kb_cls,
+            patch("jrm_advisor.supervisor.agent.GenieClient") as mock_genie_cls,
+            patch(
+                "jrm_advisor.supervisor.agent.CampaignResolverClient"
+            ) as mock_resolver_cls,
+            patch("jrm_advisor.supervisor.agent.AnswerComposer") as mock_composer_cls,
+        ):
+            mock_kb_cls.return_value = MagicMock()
+            mock_genie_cls.return_value = MagicMock()
+            mock_resolver_cls.return_value = MagicMock()
+            mock_composer_cls.return_value = MagicMock()
+
+            SupervisorAgent(user_token="dapi_test_token")
+
+            mock_genie_cls.assert_called_once_with(token="dapi_test_token")
+
+    def test_user_token_passed_to_resolver_client(self):
+        from unittest.mock import patch
+
+        with (
+            patch("jrm_advisor.supervisor.agent.KnowledgeBaseClient") as mock_kb_cls,
+            patch("jrm_advisor.supervisor.agent.GenieClient") as mock_genie_cls,
+            patch(
+                "jrm_advisor.supervisor.agent.CampaignResolverClient"
+            ) as mock_resolver_cls,
+            patch("jrm_advisor.supervisor.agent.AnswerComposer") as mock_composer_cls,
+        ):
+            mock_kb_cls.return_value = MagicMock()
+            mock_genie_cls.return_value = MagicMock()
+            mock_resolver_cls.return_value = MagicMock()
+            mock_composer_cls.return_value = MagicMock()
+
+            SupervisorAgent(user_token="dapi_test_token")
+
+            mock_resolver_cls.assert_called_once_with(token="dapi_test_token")
+
+    def test_user_token_passed_to_composer(self):
+        from unittest.mock import patch
+
+        with (
+            patch("jrm_advisor.supervisor.agent.KnowledgeBaseClient") as mock_kb_cls,
+            patch("jrm_advisor.supervisor.agent.GenieClient") as mock_genie_cls,
+            patch(
+                "jrm_advisor.supervisor.agent.CampaignResolverClient"
+            ) as mock_resolver_cls,
+            patch("jrm_advisor.supervisor.agent.AnswerComposer") as mock_composer_cls,
+        ):
+            mock_kb_cls.return_value = MagicMock()
+            mock_genie_cls.return_value = MagicMock()
+            mock_resolver_cls.return_value = MagicMock()
+            mock_composer_cls.return_value = MagicMock()
+
+            SupervisorAgent(user_token="dapi_test_token")
+
+            mock_composer_cls.assert_called_once_with(token="dapi_test_token")
+
+    def test_no_user_token_uses_none(self):
+        """When user_token is not passed, clients are constructed with token=None
+        (they fall back to DATABRICKS_TOKEN env var themselves)."""
+        from unittest.mock import patch
+
+        with (
+            patch("jrm_advisor.supervisor.agent.KnowledgeBaseClient") as mock_kb_cls,
+            patch("jrm_advisor.supervisor.agent.GenieClient") as mock_genie_cls,
+            patch(
+                "jrm_advisor.supervisor.agent.CampaignResolverClient"
+            ) as mock_resolver_cls,
+            patch("jrm_advisor.supervisor.agent.AnswerComposer") as mock_composer_cls,
+        ):
+            mock_kb_cls.return_value = MagicMock()
+            mock_genie_cls.return_value = MagicMock()
+            mock_resolver_cls.return_value = MagicMock()
+            mock_composer_cls.return_value = MagicMock()
+
+            SupervisorAgent()
+
+            mock_kb_cls.assert_called_once_with(token=None)
+            mock_genie_cls.assert_called_once_with(token=None)
+            mock_resolver_cls.assert_called_once_with(token=None)
+            mock_composer_cls.assert_called_once_with(token=None)
+
+    def test_injected_clients_not_overridden_by_user_token(self):
+        """When clients are explicitly injected, user_token is ignored for them."""
+        mock_kb = MagicMock()
+        mock_genie = MagicMock()
+        mock_kb.ask.return_value = "answer"
+        mock_genie.ask.return_value = _make_genie_result(rows=[])
+
+        agent = SupervisorAgent(
+            kb_client=mock_kb,
+            genie_client=mock_genie,
+            resolver_client=None,
+            user_token="dapi_should_be_ignored",
+        )
+        # The injected mocks are used directly — user_token didn't replace them
+        assert agent._kb is mock_kb
+        assert agent._genie is mock_genie
+
+    def test_kb_constructor_raises_with_user_token_degrades_gracefully(self):
+        """TEST-2: When KnowledgeBaseClient(token=...) raises, agent._kb is None."""
+        from unittest.mock import patch
+
+        with (
+            patch(
+                "jrm_advisor.supervisor.agent.KnowledgeBaseClient",
+                side_effect=ValueError("Missing KB_ENDPOINT_URL"),
+            ),
+            patch("jrm_advisor.supervisor.agent.GenieClient") as mock_genie_cls,
+            patch(
+                "jrm_advisor.supervisor.agent.CampaignResolverClient"
+            ) as mock_resolver_cls,
+            patch("jrm_advisor.supervisor.agent.AnswerComposer") as mock_composer_cls,
+        ):
+            mock_genie_cls.return_value = MagicMock()
+            mock_resolver_cls.return_value = MagicMock()
+            mock_composer_cls.return_value = MagicMock()
+
+            agent = SupervisorAgent(user_token="dapi_test_token")
+
+        # KB construction failed — should degrade gracefully, not raise
+        assert agent._kb is None
+        assert agent._genie is not None
+
+    def test_genie_constructor_raises_with_user_token_degrades_gracefully(self):
+        """TEST-2: When GenieClient(token=...) raises, agent._genie is None."""
+        from unittest.mock import patch
+
+        with (
+            patch("jrm_advisor.supervisor.agent.KnowledgeBaseClient") as mock_kb_cls,
+            patch(
+                "jrm_advisor.supervisor.agent.GenieClient",
+                side_effect=ValueError("Bad DATABRICKS_HOST"),
+            ),
+            patch(
+                "jrm_advisor.supervisor.agent.CampaignResolverClient"
+            ) as mock_resolver_cls,
+            patch("jrm_advisor.supervisor.agent.AnswerComposer") as mock_composer_cls,
+        ):
+            mock_kb_cls.return_value = MagicMock()
+            mock_resolver_cls.return_value = MagicMock()
+            mock_composer_cls.return_value = MagicMock()
+
+            agent = SupervisorAgent(user_token="dapi_test_token")
+
+        assert agent._kb is not None
+        assert agent._genie is None

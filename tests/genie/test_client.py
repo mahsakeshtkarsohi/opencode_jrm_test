@@ -137,7 +137,7 @@ class TestCredentials:
 
     def test_missing_token_raises(self, monkeypatch):
         monkeypatch.delenv("DATABRICKS_TOKEN")
-        with pytest.raises(ValueError, match="DATABRICKS_TOKEN"):
+        with pytest.raises(ValueError, match="authentication token"):
             GenieClient()
 
     def test_missing_space_id_raises(self, monkeypatch):
@@ -153,8 +153,26 @@ class TestCredentials:
             GenieClient()
         msg = str(exc_info.value)
         assert "DATABRICKS_HOST" in msg
-        assert "DATABRICKS_TOKEN" in msg
+        assert "authentication token" in msg
         assert "GENIE_SPACE_ID" in msg
+
+    def test_invalid_host_raises(self, monkeypatch):
+        """SEC-4: a non-Databricks host URL is rejected at construction time."""
+        monkeypatch.setenv("DATABRICKS_HOST", "https://evil.example.com")
+        with patch("jrm_advisor.genie.client.WorkspaceClient"):
+            with pytest.raises(
+                ValueError, match="not a recognised Databricks workspace URL"
+            ):
+                GenieClient()
+
+    def test_malformed_host_raises(self, monkeypatch):
+        """SEC-4: a plainly malformed host is rejected."""
+        monkeypatch.setenv("DATABRICKS_HOST", "http://insecure.azuredatabricks.net")
+        with patch("jrm_advisor.genie.client.WorkspaceClient"):
+            with pytest.raises(
+                ValueError, match="not a recognised Databricks workspace URL"
+            ):
+                GenieClient()
 
     def test_workspace_client_constructed_with_env_values(self, mock_ws):
         with patch("jrm_advisor.genie.client.WorkspaceClient") as MockWS:
