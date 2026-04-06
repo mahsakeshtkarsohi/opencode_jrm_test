@@ -26,6 +26,11 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+from jrm_advisor.campaign_resolver.client import (
+    CampaignMatch,
+    CampaignResolution,
+    CampaignResolverError,
+)
 from jrm_advisor.genie.client import (
     GenieError,
     GenieNoResultError,
@@ -70,10 +75,14 @@ def _make_agent(
     genie_rows: list[dict] | None = None,
     genie_side_effect=None,
     kb_side_effect=None,
+    resolver_resolution: CampaignResolution | None = None,
+    resolver_side_effect=None,
 ) -> tuple[SupervisorAgent, MagicMock, MagicMock]:
     """Build a SupervisorAgent with mocked sub-components."""
     mock_kb = MagicMock()
     mock_genie = MagicMock()
+    mock_resolver = MagicMock()
+    mock_composer = MagicMock()
 
     if kb_side_effect:
         mock_kb.ask.side_effect = kb_side_effect
@@ -85,7 +94,30 @@ def _make_agent(
     else:
         mock_genie.ask.return_value = _make_genie_result(rows=genie_rows or [])
 
-    agent = SupervisorAgent(kb_client=mock_kb, genie_client=mock_genie)
+    if resolver_side_effect:
+        mock_resolver.resolve.side_effect = resolver_side_effect
+    elif resolver_resolution is not None:
+        mock_resolver.resolve.return_value = resolver_resolution
+    else:
+        # Default: no match (score below threshold)
+        mock_resolver.resolve.return_value = CampaignResolution(
+            match=None, candidates=[], is_ambiguous=False, raw_query=""
+        )
+
+    # Composer passes through to _compose_answer fallback by default (empty LLM)
+    mock_composer.compose.side_effect = lambda **kw: _compose_answer(
+        intent=kw["intent"],
+        kb_answer=kw.get("kb_answer"),
+        genie_result=_make_genie_result(rows=kw.get("genie_rows") or []),
+        genie_error=None,
+    )
+
+    agent = SupervisorAgent(
+        kb_client=mock_kb,
+        genie_client=mock_genie,
+        resolver_client=mock_resolver,
+        composer=mock_composer,
+    )
     return agent, mock_kb, mock_genie
 
 
@@ -507,4 +539,294 @@ class TestComposeAnswer:
             "no data" in result.lower()
             or "no results" in result.lower()
             or "no data was returned" in result.lower()
+        )
+
+
+# ---------------------------------------------------------------------------
+# SupervisorAgent — campaign name resolution (#007)
+# ---------------------------------------------------------------------------
+
+
+def _clear_match(name: str, score: float = 0.91) -> CampaignResolution:
+    """Helper: single unambiguous match above threshold."""
+    m = CampaignMatch(name=name, score=score, metadata={})
+    return CampaignResolution(
+        match=m, candidates=[m], is_ambiguous=False, raw_query="test query"
+    )
+
+
+def _ambiguous_resolution(names: list[str]) -> CampaignResolution:
+    """Helper: two candidates with close scores → ambiguous."""
+    candidates = [
+        CampaignMatch(name=n, score=0.88 - i * 0.02, metadata={})
+        for i, n in enumerate(names)
+    ]
+    return CampaignResolution(
+        match=None, candidates=candidates, is_ambiguous=True, raw_query="test query"
+    )
+
+
+def _no_match_resolution() -> CampaignResolution:
+    return CampaignResolution(
+        match=None, candidates=[], is_ambiguous=False, raw_query="test query"
+    )
+
+
+class TestCampaignResolution:
+    def test_resolved_name_injected_into_genie_question(self):
+        """When resolver finds a match, Genie is called with the resolved name."""
+        resolution = _clear_match("Heineken Pilsner W4 2024")
+        agent, _, mock_genie = _make_agent(
+            genie_rows=[{"year_week": "202504", "actual_sales": "12000"}],
+            resolver_resolution=resolution,
+        )
+        agent.answer("Show me results for Heineken")
+        call_args = mock_genie.ask.call_args[0][0]
+        assert "Heineken Pilsner W4 2024" in call_args
+
+    def test_resolved_campaign_name_stored_in_response(self):
+        resolution = _clear_match("Heineken Pilsner W4 2024")
+        agent, _, _ = _make_agent(
+            genie_rows=[{"year_week": "202504", "actual_sales": "12000"}],
+            resolver_resolution=resolution,
+        )
+        response = agent.answer("Show me results for Heineken")
+        assert response.resolved_campaign_name == "Heineken Pilsner W4 2024"
+
+    def test_no_match_uses_raw_question_for_genie(self):
+        """When resolver finds no match, Genie receives the raw question."""
+        agent, _, mock_genie = _make_agent(
+            genie_rows=[],
+            resolver_resolution=_no_match_resolution(),
+        )
+        agent.answer("Show me results for BrandX")
+        call_args = mock_genie.ask.call_args[0][0]
+        assert "BrandX" in call_args
+        assert "[Campaign:" not in call_args
+
+    def test_resolver_error_falls_back_to_raw_question(self):
+        """Resolver errors degrade gracefully — raw question passed to Genie."""
+        agent, _, mock_genie = _make_agent(
+            genie_rows=[],
+            resolver_side_effect=CampaignResolverError("network error"),
+        )
+        response = agent.answer("Show me results for Heineken")
+        # Should not raise; Genie was still called
+        mock_genie.ask.assert_called_once()
+        assert isinstance(response, SupervisorResponse)
+
+    def test_resolver_not_called_for_kb_only_intent(self):
+        """Resolver is only invoked for DATA_ONLY and HYBRID intents."""
+        mock_resolver = MagicMock()
+        mock_kb = MagicMock()
+        mock_kb.ask.return_value = "Uplift is incremental revenue."
+        mock_composer = MagicMock()
+        mock_composer.compose.return_value = "Uplift is incremental revenue."
+        agent = SupervisorAgent(
+            kb_client=mock_kb,
+            genie_client=MagicMock(),
+            resolver_client=mock_resolver,
+            composer=mock_composer,
+        )
+        agent.answer("What is the baseline methodology?")
+        mock_resolver.resolve.assert_not_called()
+
+    def test_resolver_none_disables_resolution(self):
+        """Passing resolver_client=None disables campaign resolution entirely."""
+        mock_genie = MagicMock()
+        mock_genie.ask.return_value = _make_genie_result(rows=[])
+        mock_composer = MagicMock()
+        mock_composer.compose.return_value = "No data."
+        agent = SupervisorAgent(
+            kb_client=MagicMock(),
+            genie_client=mock_genie,
+            resolver_client=None,
+            composer=mock_composer,
+        )
+        agent.answer("Show Heineken results")
+        # No resolution → Genie called with raw question, no [Campaign:] tag
+        call_args = mock_genie.ask.call_args[0][0]
+        assert "[Campaign:" not in call_args
+
+    def test_resolved_campaign_name_none_when_no_match(self):
+        agent, _, _ = _make_agent(
+            genie_rows=[],
+            resolver_resolution=_no_match_resolution(),
+        )
+        response = agent.answer("Show me results for BrandX")
+        assert response.resolved_campaign_name is None
+
+
+# ---------------------------------------------------------------------------
+# SupervisorAgent — ambiguity handler (#008)
+# ---------------------------------------------------------------------------
+
+
+class TestAmbiguityHandler:
+    def test_ambiguous_resolution_returns_clarification(self):
+        resolution = _ambiguous_resolution(
+            ["Heineken Pilsner W4 2024", "Heineken 0.0 W4 2024"]
+        )
+        agent, _, mock_genie = _make_agent(resolver_resolution=resolution)
+        response = agent.answer("Show me results for Heineken")
+        assert response.needs_clarification is True
+        # Genie must NOT be called
+        mock_genie.ask.assert_not_called()
+
+    def test_clarification_text_lists_candidate_names(self):
+        resolution = _ambiguous_resolution(
+            ["Heineken Pilsner W4 2024", "Heineken 0.0 W4 2024"]
+        )
+        agent, _, _ = _make_agent(resolver_resolution=resolution)
+        response = agent.answer("Show me results for Heineken")
+        assert "Heineken Pilsner W4 2024" in response.text
+        assert "Heineken 0.0 W4 2024" in response.text
+
+    def test_clarification_text_no_scores(self):
+        """Scores must never appear in the clarification text."""
+        resolution = _ambiguous_resolution(
+            ["Heineken Pilsner W4 2024", "Heineken 0.0 W4 2024"]
+        )
+        agent, _, _ = _make_agent(resolver_resolution=resolution)
+        response = agent.answer("Show me results for Heineken")
+        assert "0.88" not in response.text
+        assert "0.86" not in response.text
+        assert "score" not in response.text.lower()
+
+    def test_clarification_text_no_internal_metadata(self):
+        """article_cmp_id and other internal keys must not appear in the text."""
+        resolution = _ambiguous_resolution(
+            ["Heineken Pilsner W4 2024", "Heineken 0.0 W4 2024"]
+        )
+        agent, _, _ = _make_agent(resolver_resolution=resolution)
+        response = agent.answer("Show me results for Heineken")
+        assert "article_cmp_id" not in response.text
+        assert "metadata" not in response.text.lower()
+
+    def test_clarification_no_visualization(self):
+        resolution = _ambiguous_resolution(
+            ["Heineken Pilsner W4 2024", "Heineken 0.0 W4 2024"]
+        )
+        agent, _, _ = _make_agent(resolver_resolution=resolution)
+        response = agent.answer("Show me results for Heineken")
+        assert response.visualization is None
+
+    def test_clarification_genie_rows_empty(self):
+        resolution = _ambiguous_resolution(
+            ["Heineken Pilsner W4 2024", "Heineken 0.0 W4 2024"]
+        )
+        agent, _, _ = _make_agent(resolver_resolution=resolution)
+        response = agent.answer("Show me results for Heineken")
+        assert response.genie_rows == []
+
+    def test_clear_match_does_not_trigger_clarification(self):
+        resolution = _clear_match("Heineken Pilsner W4 2024")
+        agent, _, _ = _make_agent(
+            genie_rows=[{"year_week": "202504", "actual_sales": "12000"}],
+            resolver_resolution=resolution,
+        )
+        response = agent.answer("Show me results for Heineken")
+        assert response.needs_clarification is False
+
+    def test_needs_clarification_false_for_out_of_scope(self):
+        agent, _, _ = _make_agent()
+        response = agent.answer("Can you do ROPO analysis?")
+        assert response.needs_clarification is False
+
+    def test_needs_clarification_false_for_kb_only(self):
+        agent, _, _ = _make_agent(kb_answer="Uplift is incremental.")
+        response = agent.answer("What is the baseline methodology?")
+        assert response.needs_clarification is False
+
+
+# ---------------------------------------------------------------------------
+# SupervisorAgent — AnswerComposer wiring (#009)
+# ---------------------------------------------------------------------------
+
+
+class TestAnswerComposerWiring:
+    def test_composer_called_for_data_only_intent(self):
+        mock_kb = MagicMock()
+        mock_genie = MagicMock()
+        mock_genie.ask.return_value = _make_genie_result(
+            rows=[{"year_week": "202501", "actual_sales": "5000"}]
+        )
+        mock_resolver = MagicMock()
+        mock_resolver.resolve.return_value = _no_match_resolution()
+        mock_composer = MagicMock()
+        mock_composer.compose.return_value = "LLM composed answer."
+
+        agent = SupervisorAgent(
+            kb_client=mock_kb,
+            genie_client=mock_genie,
+            resolver_client=mock_resolver,
+            composer=mock_composer,
+        )
+        response = agent.answer("Show weekly sales for the Coca-Cola campaign")
+        mock_composer.compose.assert_called_once()
+        assert response.text == "LLM composed answer."
+
+    def test_composer_called_for_hybrid_intent(self):
+        mock_kb = MagicMock()
+        mock_kb.ask.return_value = "Uplift is incremental."
+        mock_genie = MagicMock()
+        mock_genie.ask.return_value = _make_genie_result(
+            rows=[{"year_week": "202501", "actual_sales": "5000"}]
+        )
+        mock_resolver = MagicMock()
+        mock_resolver.resolve.return_value = _no_match_resolution()
+        mock_composer = MagicMock()
+        mock_composer.compose.return_value = "LLM hybrid answer."
+
+        agent = SupervisorAgent(
+            kb_client=mock_kb,
+            genie_client=mock_genie,
+            resolver_client=mock_resolver,
+            composer=mock_composer,
+        )
+        response = agent.answer(
+            "What is uplift and how did my campaign perform this period?"
+        )
+        mock_composer.compose.assert_called_once()
+        assert response.text == "LLM hybrid answer."
+
+    def test_composer_receives_correct_intent(self):
+        mock_kb = MagicMock()
+        mock_genie = MagicMock()
+        mock_genie.ask.return_value = _make_genie_result(rows=[])
+        mock_resolver = MagicMock()
+        mock_resolver.resolve.return_value = _no_match_resolution()
+        mock_composer = MagicMock()
+        mock_composer.compose.return_value = "answer"
+
+        agent = SupervisorAgent(
+            kb_client=mock_kb,
+            genie_client=mock_genie,
+            resolver_client=mock_resolver,
+            composer=mock_composer,
+        )
+        agent.answer("Show weekly sales for the Coca-Cola campaign")
+        call_kwargs = mock_composer.compose.call_args[1]
+        assert call_kwargs["intent"] == Intent.DATA_ONLY
+
+    def test_genie_error_bypasses_composer(self):
+        """When Genie fails, the error message is shown directly (no composer call)."""
+        mock_kb = MagicMock()
+        mock_genie = MagicMock()
+        mock_genie.ask.side_effect = GenieTimeoutError("timeout")
+        mock_resolver = MagicMock()
+        mock_resolver.resolve.return_value = _no_match_resolution()
+        mock_composer = MagicMock()
+        mock_composer.compose.return_value = "should not appear"
+
+        agent = SupervisorAgent(
+            kb_client=mock_kb,
+            genie_client=mock_genie,
+            resolver_client=mock_resolver,
+            composer=mock_composer,
+        )
+        response = agent.answer("Show weekly sales for the Coca-Cola campaign")
+        mock_composer.compose.assert_not_called()
+        assert (
+            "timed out" in response.text.lower() or "try again" in response.text.lower()
         )
