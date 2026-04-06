@@ -181,7 +181,20 @@ class TestCredentials:
             MockWS.assert_called_once_with(
                 host="https://test.azuredatabricks.net",
                 token="dapiTEST",
+                auth_type="pat",
             )
+
+    def test_workspace_client_uses_pat_auth_type(self, monkeypatch):
+        """auth_type='pat' must be passed so that ambient DATABRICKS_CLIENT_ID /
+        DATABRICKS_CLIENT_SECRET env vars injected by the Databricks App runtime
+        do not trigger a 'more than one authorization method configured' error."""
+        monkeypatch.setenv("DATABRICKS_CLIENT_ID", "fake-client-id")
+        monkeypatch.setenv("DATABRICKS_CLIENT_SECRET", "fake-client-secret")
+        with patch("jrm_advisor.genie.client.WorkspaceClient") as MockWS:
+            MockWS.return_value = MagicMock()
+            GenieClient()
+            _, kwargs = MockWS.call_args
+            assert kwargs.get("auth_type") == "pat"
 
 
 # ---------------------------------------------------------------------------

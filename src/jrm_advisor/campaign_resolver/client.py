@@ -190,7 +190,11 @@ class CampaignResolverClient:
             )
 
         self._warehouse_id: str = warehouse_id  # type: ignore[assignment]
-        self._ws = WorkspaceClient(host=host, token=effective_token)
+        # auth_type="pat" prevents the SDK from picking up ambient
+        # DATABRICKS_CLIENT_ID / DATABRICKS_CLIENT_SECRET env vars injected by
+        # the Databricks App runtime, which would otherwise trigger a
+        # "more than one authorization method configured" error.
+        self._ws = WorkspaceClient(host=host, token=effective_token, auth_type="pat")
 
         self._threshold: float = float(
             os.environ.get("CAMPAIGN_RESOLVER_THRESHOLD", str(_DEFAULT_THRESHOLD))

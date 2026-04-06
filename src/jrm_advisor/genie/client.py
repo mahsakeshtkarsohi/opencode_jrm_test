@@ -124,7 +124,11 @@ class GenieClient:
             )
 
         self._space_id: str = space_id  # type: ignore[assignment]
-        self._ws = WorkspaceClient(host=host, token=effective_token)
+        # auth_type="pat" prevents the SDK from picking up ambient
+        # DATABRICKS_CLIENT_ID / DATABRICKS_CLIENT_SECRET env vars injected by
+        # the Databricks App runtime, which would otherwise trigger a
+        # "more than one authorization method configured" error.
+        self._ws = WorkspaceClient(host=host, token=effective_token, auth_type="pat")
 
     # ------------------------------------------------------------------
     # Public API

@@ -63,3 +63,9 @@ env:
   # ── MLflow experiment ──────────────────────────────────────────────────────
   - name: MLFLOW_EXPERIMENT_NAME
     value: "/Shared/jrm-advisor-eval"
+
+permissions:
+  - user_authorization_scopes:
+      - sql
+      - dashboards.genie
+      - model-serving
