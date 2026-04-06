@@ -71,16 +71,14 @@ def _get_user_token() -> str | None:
 
     Databricks Apps inject the logged-in user's access token in the
     ``x-forwarded-access-token`` HTTP header.  ``st.context.headers`` exposes
-    this when running inside a Databricks App.
+    this when running inside a Databricks App.  Streamlit normalises all header
+    names to lowercase, so only the lowercase key is checked.
 
     Returns ``None`` when the header is absent (local development) — callers
     fall back to the ``DATABRICKS_TOKEN`` env var automatically.
     """
     try:
-        headers = st.context.headers
-        token = headers.get("x-forwarded-access-token") or headers.get(
-            "X-Forwarded-Access-Token"
-        )
+        token = st.context.headers.get("x-forwarded-access-token")
         return token or None
     except AttributeError:
         # st.context.headers not available in older Streamlit versions

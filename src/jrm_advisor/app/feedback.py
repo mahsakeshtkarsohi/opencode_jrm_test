@@ -27,19 +27,61 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import unicodedata
 import uuid
 from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
-_CATALOG = os.getenv("FEEDBACK_CATALOG", "dsa_development")
-_SCHEMA = os.getenv("FEEDBACK_SCHEMA", "retail_media")
-_TABLE = os.getenv("FEEDBACK_TABLE", "jrm_advisor_feedback")
+# ---------------------------------------------------------------------------
+# Unity Catalog identifier validation (SEC-1)
+# Only alphanumerics and underscores are valid UC identifier characters.
+# Validated at module load so a misconfigured env var fails loudly at startup
+# rather than silently writing DDL or data to the wrong table.
+# ---------------------------------------------------------------------------
+
+_UC_IDENT_RE = re.compile(r"^[a-zA-Z0-9_]+$")
+
+
+def _validate_uc_ident(value: str, label: str) -> str:
+    """Validate a Unity Catalog identifier (catalog, schema, or table name).
+
+    Args:
+        value: The identifier string to validate.
+        label: Human-readable label used in the error message.
+
+    Returns:
+        The validated identifier unchanged.
+
+    Raises:
+        ValueError: If the identifier contains characters outside ``[a-zA-Z0-9_]``.
+    """
+    if not _UC_IDENT_RE.match(value):
+        raise ValueError(
+            f"Invalid {label} identifier {value!r}: only alphanumeric characters "
+            "and underscores are permitted in Unity Catalog identifiers."
+        )
+    return value
+
+
+_CATALOG = _validate_uc_ident(
+    os.getenv("FEEDBACK_CATALOG", "dsa_development"), "catalog"
+)
+_SCHEMA = _validate_uc_ident(os.getenv("FEEDBACK_SCHEMA", "retail_media"), "schema")
+_TABLE = _validate_uc_ident(
+    os.getenv("FEEDBACK_TABLE", "jrm_advisor_feedback"), "table"
+)
 _FULL_TABLE = f"{_CATALOG}.{_SCHEMA}.{_TABLE}"
 
-_CREATE_DDL = f"""
-CREATE TABLE IF NOT EXISTS {_FULL_TABLE} (
+# Valid rating values — whitelist enforced in submit_feedback (SEC-3).
+_VALID_RATINGS: frozenset[str] = frozenset({"thumbs_up", "thumbs_down"})
+
+
+def _build_create_ddl(full_table: str) -> str:
+    """Return the CREATE TABLE IF NOT EXISTS DDL for the feedback table."""
+    return f"""
+CREATE TABLE IF NOT EXISTS {full_table} (
     feedback_id        STRING        NOT NULL,
     ts                 TIMESTAMP     NOT NULL,
     question           STRING,
@@ -59,14 +101,40 @@ def _get_warehouse_id() -> str | None:
 
 
 def _get_ws_client(user_token: str | None = None):  # type: ignore[return]
-    """Return a WorkspaceClient using the OBO user token or ambient SDK credentials."""
+    """Return a WorkspaceClient using the OBO user token or ambient SDK credentials.
+
+    In production (Databricks App), ``user_token`` must be present — it is the
+    OBO token forwarded via ``x-forwarded-access-token``.  Falling back to
+    ambient credentials in production would allow writes under a service account
+    with broader permissions than the actual user (SEC-2).
+
+    In local development (``USE_MOCK_BACKEND=true`` or ``DATABRICKS_TOKEN`` set),
+    ``user_token`` may be ``None`` and the SDK Config() auto-discovery is used.
+
+    Args:
+        user_token: OBO access token, or ``None`` for local dev fallback.
+
+    Raises:
+        ValueError: When ``user_token`` is absent and the app is not in local
+            dev mode.  Caught by ``submit_feedback`` which returns ``False``.
+    """
     from databricks.sdk import WorkspaceClient
     from databricks.sdk.core import Config
 
     if user_token:
         host = os.getenv("DATABRICKS_HOST")
         return WorkspaceClient(host=host, token=user_token)
-    return WorkspaceClient(config=Config())
+
+    # Allow ambient credentials in local dev mode only.
+    if os.getenv("USE_MOCK_BACKEND", "false").lower() == "true" or os.getenv(
+        "DATABRICKS_TOKEN"
+    ):
+        return WorkspaceClient(config=Config())
+
+    raise ValueError(
+        "_get_ws_client: no user_token provided and not in local dev mode. "
+        "Ensure x-forwarded-access-token is forwarded by the Databricks App runtime."
+    )
 
 
 def _escape(s: str) -> str:
@@ -109,6 +177,15 @@ def submit_feedback(
         True on success, False on any error (errors are logged, never raised
         so that feedback failures never interrupt the user's session).
     """
+    # SEC-3: whitelist rating values — reject anything outside the known set.
+    if rating not in _VALID_RATINGS:
+        logger.warning(
+            "submit_feedback: invalid rating=%r — must be one of %s; feedback not written",
+            rating,
+            _VALID_RATINGS,
+        )
+        return False
+
     warehouse_id = _get_warehouse_id()
     if not warehouse_id:
         logger.warning(
@@ -141,7 +218,7 @@ VALUES (
         # Ensure table exists
         ws.statement_execution.execute(
             warehouse_id=warehouse_id,
-            statement=_CREATE_DDL,
+            statement=_build_create_ddl(_FULL_TABLE),
             wait_timeout="10s",
         )
         # Insert feedback row

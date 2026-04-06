@@ -92,26 +92,46 @@ class TestCredentials:
             CampaignResolverClient()
 
     def test_missing_token_raises(self, monkeypatch):
-        monkeypatch.setenv("DATABRICKS_HOST", "https://x.net")
+        monkeypatch.setenv("DATABRICKS_HOST", "https://adb-1234.5.azuredatabricks.net")
         monkeypatch.setenv("DATABRICKS_SQL_WAREHOUSE_ID", "wh")
         monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
-        with pytest.raises(ValueError, match="DATABRICKS_TOKEN"):
+        with pytest.raises(ValueError, match="authentication token"):
             CampaignResolverClient()
 
     def test_missing_warehouse_id_raises(self, monkeypatch):
-        monkeypatch.setenv("DATABRICKS_HOST", "https://x.net")
+        monkeypatch.setenv("DATABRICKS_HOST", "https://adb-1234.5.azuredatabricks.net")
         monkeypatch.setenv("DATABRICKS_TOKEN", "tok")
         monkeypatch.delenv("DATABRICKS_SQL_WAREHOUSE_ID", raising=False)
         with pytest.raises(ValueError, match="DATABRICKS_SQL_WAREHOUSE_ID"):
             CampaignResolverClient()
 
     def test_all_vars_set_succeeds(self, monkeypatch):
-        monkeypatch.setenv("DATABRICKS_HOST", "https://x.net")
+        monkeypatch.setenv("DATABRICKS_HOST", "https://adb-1234.5.azuredatabricks.net")
         monkeypatch.setenv("DATABRICKS_TOKEN", "tok")
         monkeypatch.setenv("DATABRICKS_SQL_WAREHOUSE_ID", "wh")
         with patch("jrm_advisor.campaign_resolver.client.WorkspaceClient"):
             client = CampaignResolverClient()
         assert client is not None
+
+    def test_invalid_host_raises(self, monkeypatch):
+        """SEC-4: a non-Databricks host URL is rejected at construction time."""
+        monkeypatch.setenv("DATABRICKS_HOST", "https://evil.example.com")
+        monkeypatch.setenv("DATABRICKS_TOKEN", "tok")
+        monkeypatch.setenv("DATABRICKS_SQL_WAREHOUSE_ID", "wh")
+        with pytest.raises(
+            ValueError, match="not a recognised Databricks workspace URL"
+        ):
+            CampaignResolverClient()
+
+    def test_malformed_host_raises(self, monkeypatch):
+        """SEC-4: an obviously malformed host is rejected."""
+        monkeypatch.setenv("DATABRICKS_HOST", "not-a-url")
+        monkeypatch.setenv("DATABRICKS_TOKEN", "tok")
+        monkeypatch.setenv("DATABRICKS_SQL_WAREHOUSE_ID", "wh")
+        with pytest.raises(
+            ValueError, match="not a recognised Databricks workspace URL"
+        ):
+            CampaignResolverClient()
 
 
 # ---------------------------------------------------------------------------

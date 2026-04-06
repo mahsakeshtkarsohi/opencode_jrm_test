@@ -1032,3 +1032,52 @@ class TestUserTokenPassthrough:
         # The injected mocks are used directly — user_token didn't replace them
         assert agent._kb is mock_kb
         assert agent._genie is mock_genie
+
+    def test_kb_constructor_raises_with_user_token_degrades_gracefully(self):
+        """TEST-2: When KnowledgeBaseClient(token=...) raises, agent._kb is None."""
+        from unittest.mock import patch
+
+        with (
+            patch(
+                "jrm_advisor.supervisor.agent.KnowledgeBaseClient",
+                side_effect=ValueError("Missing KB_ENDPOINT_URL"),
+            ),
+            patch("jrm_advisor.supervisor.agent.GenieClient") as mock_genie_cls,
+            patch(
+                "jrm_advisor.supervisor.agent.CampaignResolverClient"
+            ) as mock_resolver_cls,
+            patch("jrm_advisor.supervisor.agent.AnswerComposer") as mock_composer_cls,
+        ):
+            mock_genie_cls.return_value = MagicMock()
+            mock_resolver_cls.return_value = MagicMock()
+            mock_composer_cls.return_value = MagicMock()
+
+            agent = SupervisorAgent(user_token="dapi_test_token")
+
+        # KB construction failed — should degrade gracefully, not raise
+        assert agent._kb is None
+        assert agent._genie is not None
+
+    def test_genie_constructor_raises_with_user_token_degrades_gracefully(self):
+        """TEST-2: When GenieClient(token=...) raises, agent._genie is None."""
+        from unittest.mock import patch
+
+        with (
+            patch("jrm_advisor.supervisor.agent.KnowledgeBaseClient") as mock_kb_cls,
+            patch(
+                "jrm_advisor.supervisor.agent.GenieClient",
+                side_effect=ValueError("Bad DATABRICKS_HOST"),
+            ),
+            patch(
+                "jrm_advisor.supervisor.agent.CampaignResolverClient"
+            ) as mock_resolver_cls,
+            patch("jrm_advisor.supervisor.agent.AnswerComposer") as mock_composer_cls,
+        ):
+            mock_kb_cls.return_value = MagicMock()
+            mock_resolver_cls.return_value = MagicMock()
+            mock_composer_cls.return_value = MagicMock()
+
+            agent = SupervisorAgent(user_token="dapi_test_token")
+
+        assert agent._kb is not None
+        assert agent._genie is None
