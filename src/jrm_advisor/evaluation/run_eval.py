@@ -222,6 +222,10 @@ def run_evaluation() -> mlflow.entities.Run:
             data=GOLD_DATASET,
             predict_fn=predict_fn,
             scorers=SCORERS,
+            # Tell MLflow which field in the predict_fn output dict is the
+            # answer string so LLM-based scorers (Correctness, Guidelines)
+            # receive prose text rather than the entire serialised dict.
+            model_output_key="text",
         )
 
     logger.info("Evaluation complete.")

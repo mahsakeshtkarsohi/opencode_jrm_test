@@ -57,8 +57,14 @@ _UC_FUNCTION = "dsa_development.retail_media.search_campaigns"
 _STATEMENT_TIMEOUT_SECONDS = 30
 # Non-terminal states indicate the statement did not complete within wait_timeout.
 # The installed SDK has no TIMEDOUT member; PENDING or RUNNING signal a timeout.
+# CANCELED and CLOSED are also terminal — treat them as errors, not timeouts.
 _TERMINAL_STATES: frozenset[StatementState] = frozenset(
-    {StatementState.SUCCEEDED, StatementState.FAILED}
+    {
+        StatementState.SUCCEEDED,
+        StatementState.FAILED,
+        StatementState.CANCELED,
+        StatementState.CLOSED,
+    }
 )
 
 
@@ -275,6 +281,11 @@ class CampaignResolverClient:
             )
             raise CampaignResolverError(
                 f"search_campaigns statement failed: {error_msg}"
+            )
+        if state in (StatementState.CANCELED, StatementState.CLOSED):
+            raise CampaignResolverError(
+                f"search_campaigns statement ended unexpectedly (state={state!r}) "
+                f"for query={query!r}"
             )
         # The SDK returns PENDING or RUNNING when wait_timeout expires before the
         # statement completes (there is no TIMEDOUT state in the installed SDK).

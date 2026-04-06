@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import logging
 import os
+import unicodedata
 import uuid
 from datetime import datetime, timezone
 
@@ -65,6 +66,19 @@ def _get_ws_client():  # type: ignore[return]
     return WorkspaceClient(config=Config())
 
 
+def _escape(s: str) -> str:
+    """Sanitise a string for safe inclusion in a SQL string literal.
+
+    Strips Unicode control characters (category Cc and Cf) then escapes
+    single quotes and backslashes so the value is safe inside a
+    single-quoted SQL string literal.
+    """
+    # Remove control characters (Cc = control, Cf = format/invisible)
+    cleaned = "".join(c for c in s if unicodedata.category(c) not in {"Cc", "Cf"})
+    # Escape SQL special characters
+    return cleaned.replace("\\", "\\\\").replace("'", "''")
+
+
 def submit_feedback(
     *,
     question: str,
@@ -98,10 +112,7 @@ def submit_feedback(
     feedback_id = str(uuid.uuid4())
     ts = datetime.now(timezone.utc).isoformat()
     answer_truncated = answer_text[:4000]
-    campaign_val = f"'{resolved_campaign}'" if resolved_campaign else "NULL"
-
-    def _escape(s: str) -> str:
-        return s.replace("'", "''")
+    campaign_val = f"'{_escape(resolved_campaign)}'" if resolved_campaign else "NULL"
 
     insert_sql = f"""
 INSERT INTO {_FULL_TABLE}

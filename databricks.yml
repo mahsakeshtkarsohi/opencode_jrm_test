@@ -1,5 +1,9 @@
 # Databricks Asset Bundle — JRM Media Advisor
 # See: https://docs.databricks.com/dev-tools/bundles/index.html
+#
+# App command is defined in app.yaml only. DAB resources reference the app
+# by source_code_path and let app.yaml govern the startup command so the
+# two files cannot silently diverge.
 
 bundle:
   name: jrm-media-advisor
@@ -25,17 +29,6 @@ targets:
           name: "[DEV] JRM Media Advisor"
           description: "Internal tool for JRM media advisors and PMs"
           source_code_path: .
-          config:
-            command:
-              - streamlit
-              - run
-              - src/jrm_advisor/app/app.py
-              - --server.port
-              - "8000"
-              - --server.address
-              - "0.0.0.0"
-              - --server.headless
-              - "true"
       # Single-node cluster for interactive development
       jobs:
         jrm_advisor_job:
@@ -63,17 +56,6 @@ targets:
           name: "JRM Media Advisor"
           description: "Internal tool for JRM media advisors and PMs"
           source_code_path: .
-          config:
-            command:
-              - streamlit
-              - run
-              - src/jrm_advisor/app/app.py
-              - --server.port
-              - "8000"
-              - --server.address
-              - "0.0.0.0"
-              - --server.headless
-              - "true"
       # Serverless for production
       jobs:
         jrm_advisor_job:

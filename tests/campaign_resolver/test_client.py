@@ -250,7 +250,6 @@ class TestErrorHandling:
             client.resolve("any query")
 
     def test_failed_statement_raises_resolver_error(self, monkeypatch):
-
         client = _make_client(monkeypatch)
         rows, cols = [], ["page_content", "metadata"]
         response = _make_statement_response(rows, cols, state="FAILED")
@@ -280,3 +279,24 @@ class TestErrorHandling:
         assert result.match is not None
         assert "0.91" not in result.match.name
         assert "score" not in result.match.name.lower()
+
+    def test_canceled_statement_raises_resolver_error(self, monkeypatch):
+        """CANCELED state is terminal but not a timeout — raises CampaignResolverError."""
+        client = _make_client(monkeypatch)
+        rows, cols = [], ["page_content", "metadata"]
+        response = _make_statement_response(rows, cols, state="CANCELED")
+        client._ws.statement_execution.execute_statement.return_value = response
+        with pytest.raises(CampaignResolverError) as exc_info:
+            client.resolve("any query")
+        # Must NOT raise CampaignResolverTimeoutError — wrong error type
+        assert not isinstance(exc_info.value, CampaignResolverTimeoutError)
+
+    def test_closed_statement_raises_resolver_error(self, monkeypatch):
+        """CLOSED state is terminal but not a timeout — raises CampaignResolverError."""
+        client = _make_client(monkeypatch)
+        rows, cols = [], ["page_content", "metadata"]
+        response = _make_statement_response(rows, cols, state="CLOSED")
+        client._ws.statement_execution.execute_statement.return_value = response
+        with pytest.raises(CampaignResolverError) as exc_info:
+            client.resolve("any query")
+        assert not isinstance(exc_info.value, CampaignResolverTimeoutError)
