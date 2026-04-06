@@ -43,6 +43,12 @@ from typing import Any
 
 import mlflow
 
+from jrm_advisor.campaign_resolver.client import (
+    CampaignResolverClient,
+    CampaignResolverError,
+    CampaignResolution,
+)
+from jrm_advisor.composer.composer import AnswerComposer
 from jrm_advisor.genie.client import (
     GenieClient,
     GenieError,
@@ -255,12 +261,23 @@ class SupervisorResponse:
     ``genie_rows`` and ``genie_sql`` are available for downstream tooling
     (e.g. an application layer that wants to render a table) but must NOT
     be surfaced verbatim to the user.
+
+    ``needs_clarification`` is set to ``True`` when the campaign name is
+    ambiguous and the user must choose from multiple candidates before the
+    query can proceed.  The application layer should treat this response as
+    an input prompt rather than a final answer.
+
+    ``resolved_campaign_name`` carries the exact ``CampaignNameAdj`` value
+    used in the Genie query when resolution succeeded, or ``None`` otherwise.
+    Internal use — do not surface to the user.
     """
 
     text: str
     visualization: VisualizationSpec | dict[str, bool] | None = None
     genie_rows: list[dict[str, Any]] = field(default_factory=list)
     genie_sql: str = ""
+    needs_clarification: bool = False
+    resolved_campaign_name: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -365,6 +382,11 @@ def _compose_answer(
     return "\n\n".join(parts).strip()
 
 
+# Sentinel object used to distinguish "caller passed None explicitly" (disable
+# resolver) from "caller did not pass anything" (use default CampaignResolverClient).
+_SENTINEL = object()
+
+
 class SupervisorAgent:
     """Supervisor agent — orchestrates KB, Genie, and Visualization components.
 
@@ -378,8 +400,13 @@ class SupervisorAgent:
     instantiated automatically from environment variables.
 
     Args:
-        kb_client:    Knowledge Base client. Defaults to ``KnowledgeBaseClient()``.
-        genie_client: Genie client. Defaults to ``GenieClient()``.
+        kb_client:       Knowledge Base client. Defaults to ``KnowledgeBaseClient()``.
+        genie_client:    Genie client. Defaults to ``GenieClient()``.
+        resolver_client: Campaign name resolver. Defaults to
+                         ``CampaignResolverClient()``.  Pass ``None`` to
+                         disable campaign resolution entirely (graceful
+                         degradation — raw question passed to Genie).
+        composer:        LLM answer composer. Defaults to ``AnswerComposer()``.
 
     Example::
 
@@ -392,9 +419,25 @@ class SupervisorAgent:
         self,
         kb_client: KnowledgeBaseClient | None = None,
         genie_client: GenieClient | None = None,
+        resolver_client: CampaignResolverClient | None = _SENTINEL,  # type: ignore[assignment]
+        composer: AnswerComposer | None = None,
     ) -> None:
         self._kb = kb_client if kb_client is not None else KnowledgeBaseClient()
         self._genie = genie_client if genie_client is not None else GenieClient()
+        # resolver_client=None means "disabled"; sentinel means "use default"
+        if resolver_client is _SENTINEL:
+            try:
+                self._resolver: CampaignResolverClient | None = CampaignResolverClient()
+            except Exception as exc:
+                logger.warning(
+                    "SupervisorAgent: could not initialise CampaignResolverClient "
+                    "(%s) — campaign resolution disabled",
+                    exc,
+                )
+                self._resolver = None
+        else:
+            self._resolver = resolver_client
+        self._composer = composer if composer is not None else AnswerComposer()
 
     # ------------------------------------------------------------------
     # Public API
@@ -413,6 +456,8 @@ class SupervisorAgent:
         Returns:
             ``SupervisorResponse`` with ``text`` ready for display and an
             optional ``visualization`` spec for chart rendering.
+            When ``needs_clarification`` is ``True``, the caller should
+            present ``text`` as a prompt for the user to select a campaign.
         """
         logger.info("SupervisorAgent.answer: question=%r", question[:120])
 
@@ -428,26 +473,73 @@ class SupervisorAgent:
         kb_answer: str | None = None
         genie_result: GenieResult | None = None
         genie_error: str | None = None
+        resolved_campaign_name: str | None = None
 
         # --- Knowledge Base call ---
         if intent in (Intent.KB_ONLY, Intent.HYBRID):
             kb_answer = self._call_kb(question)
 
+        # --- Campaign name resolution (before every Genie call) ---
+        genie_question = question  # default — raw question
+        if intent in (Intent.DATA_ONLY, Intent.HYBRID) and self._resolver is not None:
+            resolution = self._resolve_campaign(question)
+            if resolution is not None:
+                if resolution.is_ambiguous:
+                    # Return clarification question — do not call Genie yet
+                    clarification_text = self._build_clarification_text(resolution)
+                    logger.info(
+                        "SupervisorAgent.answer: returning clarification for %d candidates",
+                        len(resolution.candidates),
+                    )
+                    return SupervisorResponse(
+                        text=clarification_text,
+                        needs_clarification=True,
+                    )
+                if resolution.match is not None:
+                    resolved_campaign_name = resolution.match.name
+                    genie_question = self._inject_campaign_name(
+                        question, resolved_campaign_name
+                    )
+                    logger.info(
+                        "SupervisorAgent.answer: resolved campaign=%r",
+                        resolved_campaign_name,
+                    )
+
         # --- Genie call ---
         if intent in (Intent.DATA_ONLY, Intent.HYBRID):
-            genie_result, genie_error = self._call_genie(question)
+            genie_result, genie_error = self._call_genie(genie_question)
 
-        # --- Compose text answer ---
-        text = _compose_answer(
-            intent=intent,
-            kb_answer=kb_answer,
-            genie_result=genie_result,
-            genie_error=genie_error,
-        )
+        # --- Compose text answer via LLM composer (with fallback) ---
+        rows = genie_result.rows if genie_result else []
+
+        # When Genie produced an error (no rows, no result), skip the LLM composer
+        # and use the rule-based path directly so the specific error message is preserved.
+        if genie_error and not rows:
+            text = _compose_answer(
+                intent=intent,
+                kb_answer=kb_answer,
+                genie_result=genie_result,
+                genie_error=genie_error,
+            )
+        else:
+            text = self._composer.compose(
+                question=question,
+                intent=intent,
+                kb_answer=kb_answer,
+                genie_rows=rows if rows else None,
+                genie_sql=genie_result.sql if genie_result else "",
+            )
+            # If composer returned empty string (edge case), fall back to rule-based
+            if not text:
+                text = _compose_answer(
+                    intent=intent,
+                    kb_answer=kb_answer,
+                    genie_result=genie_result,
+                    genie_error=genie_error,
+                )
 
         # --- Visualization spec (only when rows exist and user wants a chart) ---
         viz: VisualizationSpec | dict[str, bool] | None = None
-        rows = genie_result.rows if genie_result else []
         if rows and wants_visualization(question):
             viz = build_visualization_spec(rows, user_requested_chart=True)
             logger.debug(
@@ -461,11 +553,57 @@ class SupervisorAgent:
             visualization=viz,
             genie_rows=rows,
             genie_sql=genie_result.sql if genie_result else "",
+            resolved_campaign_name=resolved_campaign_name,
         )
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    @mlflow.trace(name="campaign_resolution", span_type="TOOL")
+    def _resolve_campaign(self, question: str) -> CampaignResolution | None:
+        """Resolve a campaign name from the question using the resolver client.
+
+        Returns ``None`` on any resolver error (graceful degradation — the
+        caller falls back to the raw question for Genie).
+        """
+        try:
+            resolution = self._resolver.resolve(question)  # type: ignore[union-attr]
+            logger.debug(
+                "SupervisorAgent._resolve_campaign: match=%r ambiguous=%s",
+                resolution.match.name if resolution.match else None,
+                resolution.is_ambiguous,
+            )
+            return resolution
+        except CampaignResolverError as exc:
+            logger.warning(
+                "SupervisorAgent._resolve_campaign: resolver error — %s "
+                "(falling back to raw question)",
+                exc,
+            )
+            return None
+
+    @staticmethod
+    def _inject_campaign_name(question: str, campaign_name: str) -> str:
+        """Return the question with the resolved campaign name appended.
+
+        The appended clause ensures Genie can match on the exact
+        ``CampaignNameAdj`` even when the user's phrasing was vague.
+        """
+        return f"{question} [Campaign: {campaign_name}]"
+
+    @staticmethod
+    def _build_clarification_text(resolution: CampaignResolution) -> str:
+        """Build a business-facing clarification question listing candidates.
+
+        The text must not mention scores, article IDs, or any internal metadata.
+        """
+        candidate_lines = "\n".join(f"- {c.name}" for c in resolution.candidates)
+        return (
+            f"I found multiple campaigns that could match your question. "
+            f"Which campaign did you mean?\n\n{candidate_lines}\n\n"
+            f"Please reply with the full campaign name to continue."
+        )
 
     @mlflow.trace(name="kb_call", span_type="RETRIEVER")
     def _call_kb(self, question: str) -> str:
