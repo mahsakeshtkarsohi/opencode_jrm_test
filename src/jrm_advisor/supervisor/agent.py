@@ -41,6 +41,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+import mlflow
+
 from jrm_advisor.genie.client import (
     GenieClient,
     GenieError,
@@ -398,6 +400,7 @@ class SupervisorAgent:
     # Public API
     # ------------------------------------------------------------------
 
+    @mlflow.trace(name="supervisor_answer", span_type="AGENT")
     def answer(self, question: str) -> SupervisorResponse:
         """Answer a user question end-to-end.
 
@@ -464,6 +467,7 @@ class SupervisorAgent:
     # Internal helpers
     # ------------------------------------------------------------------
 
+    @mlflow.trace(name="kb_call", span_type="RETRIEVER")
     def _call_kb(self, question: str) -> str:
         """Call the Knowledge Base and return clean prose or ANSWER_UNAVAILABLE."""
         try:
@@ -479,6 +483,7 @@ class SupervisorAgent:
             logger.warning("SupervisorAgent._call_kb: error — %s", exc)
             return ANSWER_UNAVAILABLE
 
+    @mlflow.trace(name="genie_call", span_type="TOOL")
     def _call_genie(self, question: str) -> tuple[GenieResult | None, str | None]:
         """Call Genie and return (result, error_string).
 

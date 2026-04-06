@@ -183,6 +183,7 @@ Copy `.env.example` to `.env` and fill in:
 | `DATABRICKS_TOKEN` | Personal access token or service principal OAuth token |
 | `GENIE_SPACE_ID` | Genie Space ID for in-store campaign data |
 | `KB_ENDPOINT` | Model Serving endpoint name for the Knowledge Base |
+| `MLFLOW_EXPERIMENT_NAME` | MLflow experiment path (e.g. `/Shared/jrm-advisor-eval`) |
 
 ### Unity Catalog paths
 
@@ -190,7 +191,11 @@ _To be filled in when Unity Catalog tables are confirmed with the data team._
 
 ### MLflow
 
-_Experiment name and model registry path to be added when evaluation scaffold (issue #006) is implemented._
+- **Experiment name:** set via `MLFLOW_EXPERIMENT_NAME` env var (default: `/Shared/jrm-advisor-eval`)
+- **Run evaluation:** `python -m jrm_advisor.evaluation.run_eval`
+- **Scorer dimensions:** `response_not_empty`, `clean_response`, `intent_routing_accuracy`, `Correctness`, `business_language`, `completeness`, `no_fabrication`, `out_of_scope_handled`
+- **Gold dataset:** `src/jrm_advisor/evaluation/dataset.py` — 15 seed questions across KB, Genie, hybrid, and out-of-scope categories
+- Model registry path: _To be added when a model is registered in Unity Catalog._
 
 ### Databricks Asset Bundle
 
