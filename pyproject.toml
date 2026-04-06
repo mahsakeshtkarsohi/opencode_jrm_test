@@ -19,6 +19,11 @@ dev = [
     "pytest-cov",
     "ruff>=0.4",
 ]
+app = [
+    "streamlit>=1.38",
+    "plotly>=5.20",
+    "pandas>=2.0",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

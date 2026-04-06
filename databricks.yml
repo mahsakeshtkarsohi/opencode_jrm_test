@@ -19,8 +19,24 @@ targets:
     default: true
     workspace:
       host: ${var.databricks_host}
-    # Single-node cluster for interactive development
     resources:
+      apps:
+        jrm_advisor_app:
+          name: "[DEV] JRM Media Advisor"
+          description: "Internal tool for JRM media advisors and PMs"
+          source_code_path: .
+          config:
+            command:
+              - streamlit
+              - run
+              - src/jrm_advisor/app/app.py
+              - --server.port
+              - "8000"
+              - --server.address
+              - "0.0.0.0"
+              - --server.headless
+              - "true"
+      # Single-node cluster for interactive development
       jobs:
         jrm_advisor_job:
           name: "[DEV] JRM Media Advisor"
@@ -41,8 +57,24 @@ targets:
     mode: production
     workspace:
       host: ${var.databricks_host}
-    # Serverless for production
     resources:
+      apps:
+        jrm_advisor_app:
+          name: "JRM Media Advisor"
+          description: "Internal tool for JRM media advisors and PMs"
+          source_code_path: .
+          config:
+            command:
+              - streamlit
+              - run
+              - src/jrm_advisor/app/app.py
+              - --server.port
+              - "8000"
+              - --server.address
+              - "0.0.0.0"
+              - --server.headless
+              - "true"
+      # Serverless for production
       jobs:
         jrm_advisor_job:
           name: "[PROD] JRM Media Advisor"

@@ -1,0 +1,6 @@
+# Additional dependencies for the JRM Media Advisor Streamlit app.
+# These are on top of the jrm-advisor package (installed via pip install -e .).
+# Streamlit is pre-installed on the Databricks App runtime.
+plotly>=5.20
+pandas>=2.0
+python-dotenv>=1.0
