@@ -830,3 +830,72 @@ class TestAnswerComposerWiring:
         assert (
             "timed out" in response.text.lower() or "try again" in response.text.lower()
         )
+
+
+# ---------------------------------------------------------------------------
+# SupervisorAgent — graceful degradation when clients fail to initialise
+# ---------------------------------------------------------------------------
+
+
+class TestGracefulDegradation:
+    """SupervisorAgent must not crash when KB or Genie env vars are missing.
+
+    These tests verify that passing ``None`` for a client (which is what
+    __init__ stores when construction fails) produces graceful fallback
+    responses rather than AttributeError / TypeError at runtime.
+    """
+
+    def test_kb_none_kb_only_question_returns_unavailable(self):
+        """KB=None → ANSWER_UNAVAILABLE returned, no exception raised."""
+        mock_composer = MagicMock()
+        mock_composer.compose.return_value = ANSWER_UNAVAILABLE
+        agent = SupervisorAgent(
+            kb_client=None,
+            genie_client=MagicMock(),
+            resolver_client=None,
+            composer=mock_composer,
+        )
+        # Force kb_client to None to simulate missing KB_ENDPOINT_URL
+        agent._kb = None
+        response = agent.answer("What is the baseline methodology?")
+        assert isinstance(response, SupervisorResponse)
+        assert response.text  # non-empty
+        assert (
+            ANSWER_UNAVAILABLE in response.text
+            or "not available" in response.text.lower()
+        )
+
+    def test_genie_none_data_only_question_returns_unavailable(self):
+        """Genie=None → data-unavailable message returned, no exception raised."""
+        mock_composer = MagicMock()
+        mock_composer.compose.return_value = ""  # force fallback path
+        agent = SupervisorAgent(
+            kb_client=MagicMock(),
+            genie_client=MagicMock(),
+            resolver_client=None,
+            composer=mock_composer,
+        )
+        agent._genie = None
+        response = agent.answer("Show weekly sales for the Coca-Cola campaign")
+        assert isinstance(response, SupervisorResponse)
+        assert response.text
+        assert (
+            "not available" in response.text.lower()
+            or "try again" in response.text.lower()
+        )
+
+    def test_kb_and_genie_none_does_not_raise(self):
+        """When both KB and Genie are None the agent still returns a response."""
+        mock_composer = MagicMock()
+        mock_composer.compose.return_value = ""
+        agent = SupervisorAgent(
+            kb_client=MagicMock(),
+            genie_client=MagicMock(),
+            resolver_client=None,
+            composer=mock_composer,
+        )
+        agent._kb = None
+        agent._genie = None
+        response = agent.answer("What is uplift and how did my campaign perform?")
+        assert isinstance(response, SupervisorResponse)
+        assert response.text
