@@ -9,7 +9,7 @@ requires-python = ">=3.10"
 dependencies = [
     "pydantic>=2.0",
     "databricks-sdk>=0.20",
-    "mlflow>=2.14",
+    "mlflow[databricks]>=3.1.0",
     "python-dotenv>=1.0",
 ]
 
@@ -17,6 +17,7 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "pytest-cov",
+    "ruff>=0.4",
 ]
 
 [tool.setuptools.packages.find]

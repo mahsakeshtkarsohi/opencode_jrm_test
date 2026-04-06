@@ -1,0 +1,163 @@
+"""
+MLflow GenAI evaluation runner for the JRM Media Advisor.
+
+Runs ``mlflow.genai.evaluate()`` against the gold dataset using all
+configured scorers. Results (metrics, traces, per-row feedback) are
+logged to the MLflow experiment defined by ``MLFLOW_EXPERIMENT_NAME``
+in your ``.env`` file (or the environment).
+
+Usage (local — imports the agent directly, no deployed endpoint needed)::
+
+    python -m jrm_advisor.evaluation.run_eval
+
+Environment variables required (see .env.example):
+  DATABRICKS_HOST          — Databricks workspace URL
+  DATABRICKS_TOKEN         — PAT or service principal token
+  GENIE_SPACE_ID           — Genie Space for campaign data queries
+  KB_ENDPOINT_URL          — KA Model Serving endpoint URL
+  MLFLOW_EXPERIMENT_NAME   — MLflow experiment path (e.g. /Shared/jrm-advisor-eval)
+
+The runner uses the **local agent** pattern (imports SupervisorAgent
+directly) so evaluation works without a deployed Model Serving endpoint.
+This is the recommended approach for development iteration per the
+MLflow evaluation skill.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+
+import mlflow
+from dotenv import load_dotenv
+from mlflow.genai.scorers import (
+    Correctness,
+    Guidelines,
+)
+
+from jrm_advisor.evaluation.dataset import GOLD_DATASET
+from jrm_advisor.evaluation.scorers import (
+    clean_response,
+    intent_routing_accuracy,
+    response_not_empty,
+)
+from jrm_advisor.supervisor.agent import SupervisorAgent
+
+load_dotenv()
+
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s — %(message)s")
+
+# ---------------------------------------------------------------------------
+# Experiment configuration
+# ---------------------------------------------------------------------------
+_EXPERIMENT_NAME: str = os.getenv("MLFLOW_EXPERIMENT_NAME", "/Shared/jrm-advisor-eval")
+
+# ---------------------------------------------------------------------------
+# predict_fn — called by mlflow.genai.evaluate() for each dataset row.
+# Receives **unpacked inputs (not a dict) per MLflow 3 GenAI contract.
+# ---------------------------------------------------------------------------
+_agent: SupervisorAgent | None = None
+
+
+def _get_agent() -> SupervisorAgent:
+    """Lazy-initialise the agent (once per process)."""
+    global _agent
+    if _agent is None:
+        _agent = SupervisorAgent()
+    return _agent
+
+
+def predict_fn(question: str) -> dict:
+    """Wrap SupervisorAgent.answer() for mlflow.genai.evaluate().
+
+    The 'inputs' key in the gold dataset is ``{"question": "..."}`` so
+    mlflow unpacks it as ``predict_fn(question="...")`` — matching this
+    signature.
+
+    Returns a dict with ``"text"`` matching SupervisorResponse.text so
+    scorers can access ``outputs["text"]``.
+    """
+    agent = _get_agent()
+    response = agent.answer(question)
+    return {"text": response.text}
+
+
+# ---------------------------------------------------------------------------
+# Scorers
+# ---------------------------------------------------------------------------
+SCORERS = [
+    response_not_empty,
+    clean_response,
+    intent_routing_accuracy,
+    Correctness(),
+    Guidelines(
+        name="business_language",
+        guidelines=(
+            "The response must be written in professional, plain business language. "
+            "It must not contain internal system names, raw tool output, code "
+            "snippets, or technical implementation details."
+        ),
+    ),
+    Guidelines(
+        name="completeness",
+        guidelines=(
+            "The response must fully address the request. "
+            "If the requested data or knowledge is unavailable the response must "
+            "clearly state that rather than returning a vague or empty answer."
+        ),
+    ),
+    Guidelines(
+        name="no_fabrication",
+        guidelines=(
+            "The response must not invent data, metrics, or facts that are not "
+            "explicitly stated in available information. "
+            "When data is missing the response must acknowledge the gap."
+        ),
+    ),
+    Guidelines(
+        name="out_of_scope_handled",
+        guidelines=(
+            "When the request covers a topic that is not supported "
+            "(store-level ROI, ROPO, digital channels, pre-launch forecasting, "
+            "WAP drill-down), the response must clearly state this limitation "
+            "without fabricating an answer."
+        ),
+    ),
+]
+
+
+# ---------------------------------------------------------------------------
+# Runner
+# ---------------------------------------------------------------------------
+
+
+def run_evaluation() -> mlflow.entities.Run:
+    """Execute the evaluation and return the MLflow run.
+
+    Returns:
+        The completed MLflow ``Run`` object. Inspect
+        ``run.data.metrics`` for aggregate scores.
+    """
+    mlflow.set_tracking_uri("databricks")
+    mlflow.set_experiment(_EXPERIMENT_NAME)
+
+    logger.info(
+        "Starting JRM Advisor evaluation against %d questions.", len(GOLD_DATASET)
+    )
+    logger.info("MLflow experiment: %s", _EXPERIMENT_NAME)
+
+    results = mlflow.genai.evaluate(
+        data=GOLD_DATASET,
+        predict_fn=predict_fn,
+        scorers=SCORERS,
+    )
+
+    logger.info("Evaluation complete. Run ID: %s", results.run_id)
+    logger.info("Aggregate metrics: %s", results.metrics)
+
+    return results
+
+
+if __name__ == "__main__":
+    run_evaluation()
