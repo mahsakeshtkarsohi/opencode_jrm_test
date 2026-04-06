@@ -1,6 +1,11 @@
 # Databricks App manifest — JRM Media Advisor
 # Deploy with: databricks apps deploy jrm-media-advisor --source-code-path .
 # Or via DABs: databricks bundle deploy --target dev
+#
+# Auth model: user PAT stored in the jrm-advisor secret scope.
+# The app runs as the token owner — no service principal required.
+# To set your token:
+#   databricks secrets put-secret jrm-advisor databricks_token --string-value <your-PAT>
 
 command:
   - streamlit
@@ -14,6 +19,10 @@ command:
   - "true"
 
 env:
+  # ── Auth — PAT stored in secret scope, no service principal needed ─────────
+  - name: DATABRICKS_TOKEN
+    valueFrom: databricks_token
+
   # ── Backend toggle ─────────────────────────────────────────────────────────
   # Set to "true" during local development to use the deterministic mock.
   # Must be "false" (or unset) in the deployed Databricks App.
@@ -55,6 +64,11 @@ env:
     value: "/Shared/jrm-advisor-eval"
 
 resources:
+  - name: databricks_token
+    description: "Personal Access Token of the user running the app (no SP needed)"
+    secret:
+      scope: jrm-advisor
+      key: databricks_token
   - name: genie_space_id
     description: "Genie Space ID for in-store campaign data"
     secret:
