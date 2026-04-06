@@ -1,0 +1,10 @@
+# Root requirements.txt — read by the Databricks App runtime at deploy time.
+#
+# "." installs the local jrm_advisor package from pyproject.toml (src layout).
+# The [app] extra pulls in streamlit, plotly, and pandas.
+# Streamlit is pre-installed on the Databricks App runtime but listing it here
+# ensures the correct minimum version is enforced.
+.
+plotly>=5.20
+pandas>=2.0
+python-dotenv>=1.0
