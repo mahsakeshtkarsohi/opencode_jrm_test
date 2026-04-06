@@ -98,16 +98,19 @@ class KnowledgeBaseClient:
         answer = client.ask("What is sales uplift and how is it measured?")
     """
 
-    def __init__(self, timeout: int = _DEFAULT_TIMEOUT_SECONDS) -> None:
+    def __init__(
+        self, timeout: int = _DEFAULT_TIMEOUT_SECONDS, token: str | None = None
+    ) -> None:
         host = os.environ.get("DATABRICKS_HOST")
-        token = os.environ.get("DATABRICKS_TOKEN")
+        env_token = os.environ.get("DATABRICKS_TOKEN")
+        effective_token = token or env_token
         endpoint_url = os.environ.get("KB_ENDPOINT_URL")
 
         missing = [
             k
             for k, v in [
                 ("DATABRICKS_HOST", host),
-                ("DATABRICKS_TOKEN", token),
+                ("DATABRICKS_TOKEN (or user token)", effective_token),
                 ("KB_ENDPOINT_URL", endpoint_url),
             ]
             if not v
@@ -118,7 +121,7 @@ class KnowledgeBaseClient:
                 "Copy .env.example to .env and fill in the values."
             )
 
-        self._token: str = token  # type: ignore[assignment]
+        self._token: str = effective_token  # type: ignore[assignment]
         self._endpoint_url: str = endpoint_url  # type: ignore[assignment]
         self._timeout = timeout
 

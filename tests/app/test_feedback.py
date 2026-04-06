@@ -6,7 +6,9 @@ No Databricks connection required.
 
 from __future__ import annotations
 
-from jrm_advisor.app.feedback import _escape
+from unittest.mock import MagicMock, patch
+
+from jrm_advisor.app.feedback import _escape, _get_ws_client
 
 
 class TestEscape:
@@ -47,3 +49,33 @@ class TestEscape:
 
     def test_multiple_quotes(self):
         assert _escape("it's a 'test'") == "it''s a ''test''"
+
+
+class TestGetWsClient:
+    def test_uses_user_token_when_provided(self):
+        """_get_ws_client should use WorkspaceClient(host=..., token=...) for OBO."""
+        with (
+            patch("databricks.sdk.WorkspaceClient") as mock_ws_cls,
+            patch.dict(
+                "os.environ",
+                {"DATABRICKS_HOST": "https://adb-test.azuredatabricks.net"},
+            ),
+        ):
+            mock_ws_cls.return_value = MagicMock()
+            _get_ws_client(user_token="dapi_obo_token")
+            mock_ws_cls.assert_called_once_with(
+                host="https://adb-test.azuredatabricks.net",
+                token="dapi_obo_token",
+            )
+
+    def test_uses_config_when_no_token(self):
+        """_get_ws_client should use Config() when no user_token is supplied."""
+        with (
+            patch("databricks.sdk.WorkspaceClient") as mock_ws_cls,
+            patch("databricks.sdk.core.Config") as mock_config_cls,
+        ):
+            mock_ws_cls.return_value = MagicMock()
+            mock_config_cls.return_value = MagicMock()
+            _get_ws_client(user_token=None)
+            mock_config_cls.assert_called_once()
+            mock_ws_cls.assert_called_once_with(config=mock_config_cls.return_value)

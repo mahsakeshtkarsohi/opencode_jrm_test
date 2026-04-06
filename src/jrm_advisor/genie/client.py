@@ -85,16 +85,17 @@ class GenieClient:
     All three are required. Missing variables raise ``ValueError`` at construction time.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, token: str | None = None) -> None:
         host = os.environ.get("DATABRICKS_HOST")
-        token = os.environ.get("DATABRICKS_TOKEN")
+        env_token = os.environ.get("DATABRICKS_TOKEN")
+        effective_token = token or env_token
         space_id = os.environ.get("GENIE_SPACE_ID")
 
         missing = [
             k
             for k, v in [
                 ("DATABRICKS_HOST", host),
-                ("DATABRICKS_TOKEN", token),
+                ("DATABRICKS_TOKEN (or user token)", effective_token),
                 ("GENIE_SPACE_ID", space_id),
             ]
             if not v
@@ -106,7 +107,7 @@ class GenieClient:
             )
 
         self._space_id: str = space_id  # type: ignore[assignment]
-        self._ws = WorkspaceClient(host=host, token=token)
+        self._ws = WorkspaceClient(host=host, token=effective_token)
 
     # ------------------------------------------------------------------
     # Public API

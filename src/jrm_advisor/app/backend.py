@@ -1,15 +1,26 @@
 """
 Backend interface for the JRM Media Advisor Streamlit app.
 
-Wraps SupervisorAgent behind a simple ask() call.  The USE_MOCK_BACKEND
-environment variable (default "true") switches between the real agent and a
-deterministic mock so the UI can be developed and tested locally without a
-live Databricks connection.
+Wraps SupervisorAgent behind a simple ask() call.
+
+Auth model (on Databricks Apps):
+  The app uses on-behalf-of (OBO) user auth. The logged-in user's access token
+  is forwarded by the Databricks App runtime in the ``x-forwarded-access-token``
+  HTTP header. ``app.py`` extracts it and passes it here as ``user_token``.
+  All Databricks API calls (Genie, KB, resolver, feedback) are made with that
+  token — so data access is gated by the user's own Unity Catalog permissions.
+  No service principal or PAT is required.
+
+Local development:
+  Set USE_MOCK_BACKEND=true to use the deterministic mock without any
+  Databricks connection.  When running against a real workspace locally,
+  set DATABRICKS_TOKEN in your .env file — it is used as the fallback token
+  when no user token is provided.
 
 Usage::
 
-    from jrm_advisor.app.backend import get_backend
-    backend = get_backend()
+    from jrm_advisor.app.backend import AppResponse, get_backend
+    backend = get_backend(user_token="dapi...")
     result = backend.ask("What is sales uplift?")
 """
 
@@ -44,20 +55,32 @@ class AppResponse:
 
 
 # ---------------------------------------------------------------------------
-# Real backend — delegates to SupervisorAgent.
+# Real backend — delegates to SupervisorAgent with per-request user token.
 # ---------------------------------------------------------------------------
 
 
 class RealBackend:
-    """Wraps SupervisorAgent for use in the Streamlit app."""
+    """Wraps SupervisorAgent for use in the Streamlit app.
 
-    def __init__(self) -> None:
-        from jrm_advisor.supervisor.agent import SupervisorAgent
+    A new SupervisorAgent is constructed per ``ask()`` call so that the
+    user token (which changes per session) is always fresh.  The agent and
+    its sub-clients are lightweight — construction cost is negligible
+    compared to the network round-trips they make.
 
-        self._agent = SupervisorAgent()
+    Args:
+        user_token: The on-behalf-of user access token extracted from the
+            ``x-forwarded-access-token`` header.  Falls back to the
+            ``DATABRICKS_TOKEN`` env var when not provided (local dev).
+    """
+
+    def __init__(self, user_token: str | None = None) -> None:
+        self._token = user_token or os.getenv("DATABRICKS_TOKEN", "")
 
     def ask(self, question: str) -> AppResponse:
-        response = self._agent.answer(question)
+        from jrm_advisor.supervisor.agent import SupervisorAgent
+
+        agent = SupervisorAgent(user_token=self._token)
+        response = agent.answer(question)
         viz: dict[str, Any] | None = None
         if response.visualization is not None:
             if hasattr(response.visualization, "model_dump"):
@@ -79,15 +102,18 @@ class RealBackend:
 # ---------------------------------------------------------------------------
 
 
-def get_backend() -> RealBackend:
-    """Return a RealBackend.
+def get_backend(user_token: str | None = None) -> RealBackend:
+    """Return a backend instance.
 
-    The USE_MOCK_BACKEND env var is read here so that the mock path can be
-    imported in ``backend_mock.py`` without this module needing to know about
-    it at import time.
+    Args:
+        user_token: OBO access token from ``x-forwarded-access-token`` header.
+            Ignored when USE_MOCK_BACKEND=true.
+
+    The USE_MOCK_BACKEND env var switches to the deterministic mock so the UI
+    can be developed locally without a live Databricks connection.
     """
     if os.getenv("USE_MOCK_BACKEND", "false").lower() == "true":
         from jrm_advisor.app.backend_mock import MockBackend
 
         return MockBackend()  # type: ignore[return-value]
-    return RealBackend()
+    return RealBackend(user_token=user_token)

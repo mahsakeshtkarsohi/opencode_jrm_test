@@ -58,11 +58,14 @@ def _get_warehouse_id() -> str | None:
     return os.getenv("DATABRICKS_SQL_WAREHOUSE_ID")
 
 
-def _get_ws_client():  # type: ignore[return]
-    """Return a WorkspaceClient using ambient SDK credentials."""
+def _get_ws_client(user_token: str | None = None):  # type: ignore[return]
+    """Return a WorkspaceClient using the OBO user token or ambient SDK credentials."""
     from databricks.sdk import WorkspaceClient
     from databricks.sdk.core import Config
 
+    if user_token:
+        host = os.getenv("DATABRICKS_HOST")
+        return WorkspaceClient(host=host, token=user_token)
     return WorkspaceClient(config=Config())
 
 
@@ -87,6 +90,7 @@ def submit_feedback(
     comment: str = "",
     session_id: str = "",
     resolved_campaign: str | None = None,
+    user_token: str | None = None,
 ) -> bool:
     """Write a feedback record to the Delta feedback table.
 
@@ -97,6 +101,9 @@ def submit_feedback(
         comment:            Optional free-text comment from the user.
         session_id:         Streamlit session ID for grouping turns.
         resolved_campaign:  The resolved CampaignNameAdj, or None.
+        user_token:         OBO access token from ``x-forwarded-access-token`` header.
+            When provided, used instead of ambient SDK credentials so writes
+            are attributed to the logged-in user's identity.
 
     Returns:
         True on success, False on any error (errors are logged, never raised
@@ -130,7 +137,7 @@ VALUES (
 """
 
     try:
-        ws = _get_ws_client()
+        ws = _get_ws_client(user_token=user_token)
         # Ensure table exists
         ws.statement_execution.execute(
             warehouse_id=warehouse_id,

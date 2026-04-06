@@ -152,16 +152,17 @@ class CampaignResolverClient:
             ...
     """
 
-    def __init__(self) -> None:
+    def __init__(self, token: str | None = None) -> None:
         host = os.environ.get("DATABRICKS_HOST")
-        token = os.environ.get("DATABRICKS_TOKEN")
+        env_token = os.environ.get("DATABRICKS_TOKEN")
+        effective_token = token or env_token
         warehouse_id = os.environ.get("DATABRICKS_SQL_WAREHOUSE_ID")
 
         missing = [
             k
             for k, v in [
                 ("DATABRICKS_HOST", host),
-                ("DATABRICKS_TOKEN", token),
+                ("DATABRICKS_TOKEN (or user token)", effective_token),
                 ("DATABRICKS_SQL_WAREHOUSE_ID", warehouse_id),
             ]
             if not v
@@ -173,7 +174,7 @@ class CampaignResolverClient:
             )
 
         self._warehouse_id: str = warehouse_id  # type: ignore[assignment]
-        self._ws = WorkspaceClient(host=host, token=token)
+        self._ws = WorkspaceClient(host=host, token=effective_token)
 
         self._threshold: float = float(
             os.environ.get("CAMPAIGN_RESOLVER_THRESHOLD", str(_DEFAULT_THRESHOLD))
