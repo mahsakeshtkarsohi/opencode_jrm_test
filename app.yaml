@@ -34,21 +34,25 @@ env:
   - name: FEEDBACK_TABLE
     value: "jrm_advisor_feedback"
 
+  # ── Databricks workspace ───────────────────────────────────────────────────
+  - name: DATABRICKS_HOST
+    value: "https://adb-8342392658526315.15.azuredatabricks.net"
+
   # ── Genie Space ────────────────────────────────────────────────────────────
   - name: GENIE_SPACE_ID
-    valueFrom: genie_space_id
+    value: "01f11870eeca18398f56b6a649bcda49"
 
   # ── Knowledge Base endpoint ────────────────────────────────────────────────
   - name: KB_ENDPOINT_URL
-    valueFrom: kb_endpoint_url
+    value: "https://adb-8342392658526315.15.azuredatabricks.net/serving-endpoints/ka-c3f1fbaf-endpoint/invocations"
 
   # ── LLM composer endpoint ──────────────────────────────────────────────────
   - name: COMPOSER_ENDPOINT
-    valueFrom: composer_endpoint
+    value: "https://adb-8342392658526315.15.azuredatabricks.net/serving-endpoints/databricks-claude-sonnet-4-6/invocations"
 
   # ── SQL Warehouse for campaign resolver + feedback writer ──────────────────
   - name: DATABRICKS_SQL_WAREHOUSE_ID
-    valueFrom: sql_warehouse_id
+    value: "033514a136656dc0"
 
   # ── Campaign resolver thresholds (optional — defaults apply if unset) ──────
   - name: CAMPAIGN_RESOLVER_THRESHOLD
@@ -59,25 +63,3 @@ env:
   # ── MLflow experiment ──────────────────────────────────────────────────────
   - name: MLFLOW_EXPERIMENT_NAME
     value: "/Shared/jrm-advisor-eval"
-
-resources:
-  - name: genie_space_id
-    description: "Genie Space ID for in-store campaign data"
-    secret:
-      scope: jrm-advisor
-      key: genie_space_id
-  - name: kb_endpoint_url
-    description: "Knowledge Base KA Model Serving endpoint URL"
-    secret:
-      scope: jrm-advisor
-      key: kb_endpoint_url
-  - name: composer_endpoint
-    description: "Foundation model endpoint URL for answer composition"
-    secret:
-      scope: jrm-advisor
-      key: composer_endpoint
-  - name: sql_warehouse_id
-    description: "SQL Warehouse ID for campaign resolution and feedback"
-    secret:
-      scope: jrm-advisor
-      key: sql_warehouse_id
