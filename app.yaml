@@ -69,3 +69,6 @@ permissions:
       - sql
       - dashboards.genie
       - model-serving
+      - catalog.catalogs:read
+      - catalog.tables:read
+      - catalog.schemas:read

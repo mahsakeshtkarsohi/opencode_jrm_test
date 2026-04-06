@@ -193,8 +193,7 @@ class TestCredentials:
         with patch("jrm_advisor.genie.client.WorkspaceClient") as MockWS:
             MockWS.return_value = MagicMock()
             GenieClient()
-            _, kwargs = MockWS.call_args
-            assert kwargs.get("auth_type") == "pat"
+            assert MockWS.call_args.kwargs.get("auth_type") == "pat"
 
 
 # ---------------------------------------------------------------------------
